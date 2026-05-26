@@ -1,0 +1,56 @@
+{
+  "name": "sparkcli",
+  "version": "0.1.0",
+  "description": "Interactive TUI + batch CLI for spark profiler reports — fetch by URL or code, drill into threads and call trees, audit hot spots against a Paper/Spigot source tree.",
+  "type": "module",
+  "bin": {
+    "sparkcli": "bin/sparkcli.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "LICENSE",
+    "tsconfig.json"
+  ],
+  "scripts": {
+    "start": "tsx src/cli.tsx",
+    "sparkcli": "tsx src/cli.tsx",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "spark",
+    "profiler",
+    "minecraft",
+    "paper",
+    "spigot",
+    "tui",
+    "ink",
+    "protobuf"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ruleyourowngame/sparkcli"
+  },
+  "homepage": "https://github.com/ruleyourowngame/sparkcli",
+  "bugs": {
+    "url": "https://github.com/ruleyourowngame/sparkcli/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ink": "^5.2.1",
+    "protobufjs": "^7.4.0",
+    "react": "^18.3.1",
+    "tsx": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/react": "^18.3.18",
+    "typescript": "^5.7.3"
+  }
+}
