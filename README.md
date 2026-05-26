@@ -25,16 +25,41 @@ Top 10 self-time hot spots in "Server thread":
 
 ## Install
 
-Requires Node ≥ 18.
+Requires Node ≥ 18 (and `npm`, which ships with it).
+
+### One-off (no install)
+
+```bash
+npx -y github:ruleyourowngame/sparkcli https://spark.lucko.me/AbCdEfGhIj
+```
+
+`npx` downloads to its cache, runs once, and stays out of your PATH. Use this if you just want to try it.
+
+### Global install
+
+```bash
+npm install -g github:ruleyourowngame/sparkcli
+sparkcli https://spark.lucko.me/AbCdEfGhIj
+```
+
+Puts a `sparkcli` binary on your PATH (typically `~/.npm-global/bin/` or `/usr/local/bin/`, depending on your npm prefix).
+
+Update later with the same command — npm pulls latest `main`. Uninstall with:
+
+```bash
+npm uninstall -g sparkcli
+```
+
+### From source (for hacking on sparkcli itself)
 
 ```bash
 git clone https://github.com/ruleyourowngame/sparkcli
 cd sparkcli
 npm install
-npm link            # exposes `sparkcli` globally
+npm link            # exposes `sparkcli` globally from your checkout
 ```
 
-Or run without linking:
+Or run directly without linking:
 
 ```bash
 npm start -- https://spark.lucko.me/AbCdEfGhIj
