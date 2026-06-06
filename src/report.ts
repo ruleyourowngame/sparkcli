@@ -24,6 +24,40 @@ function paint(s: string, code: string, color: boolean): string {
   return `${code}${s}${C.reset}`;
 }
 
+// fraction (0..1) -> "87.8%"
+function pct(frac: number): string {
+  return `${(frac * 100).toFixed(1)}%`;
+}
+
+// Colour a CPU usage fraction. High isn't necessarily bad (it can be a small
+// core cap), but it's the thing worth eyeballing, so flag it.
+function cpuColor(frac: number): string {
+  return frac >= 0.9 ? C.red : frac >= 0.7 ? C.yellow : C.green;
+}
+
+function fmtBytes(n: number): string {
+  if (n <= 0) return "0";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(v >= 100 || i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+function fmtUptime(ms: number): string {
+  if (ms <= 0) return "?";
+  const s = Math.floor(ms / 1000);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
 function pickThread(report: Report, query?: string): Thread {
   if (!query) {
     return (
@@ -63,6 +97,8 @@ export function renderText(report: Report, opts: ReportOptions): string {
       `p95 ${tps.msptP95.toFixed(1)} max ${tps.msptMax.toFixed(1)}`,
   );
 
+  out.push(...renderSystem(report, c));
+
   const totalAll = report.threads.reduce((s, t) => s + t.total, 0) || 1;
   out.push("");
   out.push(paint(`Threads (${report.threads.length}):`, C.bold, c));
@@ -71,6 +107,18 @@ export function renderText(report: Report, opts: ReportOptions): string {
     out.push(`  ${pct.toFixed(1).padStart(5)}%  ${t.name}`);
   }
   if (report.threads.length > 10) out.push(paint(`  ... +${report.threads.length - 10} more`, C.dim, c));
+
+  if (report.threads.length === 0) {
+    out.push("");
+    out.push(
+      paint(
+        "No thread samples in this report — statistics-only snapshot (see CPU/system above).",
+        C.yellow,
+        c,
+      ),
+    );
+    return out.join("\n");
+  }
 
   const thread = pickThread(report, opts.thread);
   const all = hotSpots(thread);
@@ -91,6 +139,48 @@ export function renderText(report: Report, opts: ReportOptions): string {
   return out.join("\n");
 }
 
+// CPU / memory header block + the per-window CPU·TPS time series.
+function renderSystem(report: Report, c: boolean): string[] {
+  const out: string[] = [];
+  const s = report.system;
+  const hasCpu = s.cpuThreads > 0 || s.cpuProcess1m > 0 || s.cpuSystem1m > 0;
+  if (!hasCpu && report.windows.length === 0) return out;
+
+  if (hasCpu) {
+    const cores = s.cpuThreads > 0 ? `  ${paint("cores", C.dim, c)} ${s.cpuThreads}` : "";
+    out.push(
+      `${paint("CPU      :", C.dim, c)} ${paint("process", C.dim, c)} ` +
+        `${paint(pct(s.cpuProcess1m), cpuColor(s.cpuProcess1m), c)} / ${pct(s.cpuProcess15m)}` +
+        `   ${paint("system", C.dim, c)} ${paint(pct(s.cpuSystem1m), cpuColor(s.cpuSystem1m), c)} / ${pct(s.cpuSystem15m)}` +
+        `   ${paint("(1m/15m)", C.dim, c)}${cores}`,
+    );
+    const memLine =
+      s.memTotal > 0
+        ? `${paint("memory   :", C.dim, c)} ${fmtBytes(s.memUsed)} / ${fmtBytes(s.memTotal)}` +
+          ` ${paint(`(${pct(s.memUsed / s.memTotal)})`, C.dim, c)}` +
+          (s.uptime > 0 ? `   ${paint("uptime", C.dim, c)} ${fmtUptime(s.uptime)}` : "")
+        : "";
+    if (memLine) out.push(memLine);
+    if (s.cpuModel) out.push(`           ${paint(s.cpuModel, C.dim, c)}`);
+  }
+
+  if (report.windows.length > 0) {
+    out.push("");
+    out.push(paint(`Windows (${report.windows.length} × ~1m — CPU process/system · TPS · MSPT med · players):`, C.bold, c));
+    report.windows.forEach((w, i) => {
+      out.push(
+        `  ${paint(`#${i + 1}`.padEnd(3), C.dim, c)} ${(w.durationMs / 1000).toFixed(1).padStart(5)}s` +
+          `   ${paint("cpu", C.dim, c)} ${paint(pct(w.cpuProcess), cpuColor(w.cpuProcess), c)} / ${pct(w.cpuSystem)}` +
+          `   ${paint("tps", C.dim, c)} ${w.tps.toFixed(2)}` +
+          `   ${paint("mspt", C.dim, c)} ${w.msptMedian.toFixed(2)}` +
+          `   ${paint("players", C.dim, c)} ${w.players}`,
+      );
+    });
+  }
+
+  return out;
+}
+
 function renderRow(f: Frame, total: number, color: boolean, leading: "self" | "incl"): string {
   const selfPct = (f.self / total) * 100;
   const inclPct = (f.inclusive / total) * 100;
@@ -104,18 +194,23 @@ function renderRow(f: Frame, total: number, color: boolean, leading: "self" | "i
 }
 
 function renderJson(report: Report, opts: ReportOptions): string {
-  const thread = pickThread(report, opts.thread);
-  const total = thread.total || 1;
-  const frames = hotSpots(thread).sort((a, b) => b.self - a.self).slice(0, opts.top);
+  const hasThreads = report.threads.length > 0;
+  const thread = hasThreads ? pickThread(report, opts.thread) : null;
+  const total = (thread?.total ?? 0) || 1;
+  const frames = thread
+    ? hotSpots(thread).sort((a, b) => b.self - a.self).slice(0, opts.top)
+    : [];
   return JSON.stringify(
     {
       platform: report.platform,
       stats: report.stats,
+      system: report.system,
+      windows: report.windows,
       ticks: report.numberOfTicks,
       duration: (report.endTime - report.startTime) / 1000,
       threads: report.threads.map((t) => ({ name: t.name, total: t.total })),
-      thread: thread.name,
-      threadTotal: thread.total,
+      thread: thread?.name ?? null,
+      threadTotal: thread?.total ?? 0,
       frames: frames.map((f) => ({
         class: f.className,
         method: f.methodName,

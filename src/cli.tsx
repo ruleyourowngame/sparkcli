@@ -22,7 +22,7 @@ type ThreadMode =
   | { kind: "hotspots"; sort: "self" | "inclusive"; cursor: number }
   | { kind: "tree"; cursor: number; expanded: Set<string> };
 
-const HEADER_HEIGHT = 7;
+const HEADER_HEIGHT = 8;
 
 function useTermSize(): { rows: number; cols: number } {
   const [size, setSize] = useState(() => ({
@@ -40,9 +40,14 @@ function useTermSize(): { rows: number; cols: number } {
   return size;
 }
 
+function cpuTone(frac: number): "green" | "yellow" | "red" {
+  return frac >= 0.9 ? "red" : frac >= 0.7 ? "yellow" : "green";
+}
+
 function Header({ report }: { report: Report }) {
-  const { platform, stats, numberOfTicks, samplerMode, samplerEngine, threads } = report;
+  const { platform, stats, system, numberOfTicks, samplerMode, samplerEngine, threads } = report;
   const duration = (report.endTime - report.startTime) / 1000;
+  const hasCpu = system.cpuThreads > 0 || system.cpuProcess1m > 0 || system.cpuSystem1m > 0;
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1}>
       <Box>
@@ -68,6 +73,20 @@ function Header({ report }: { report: Report }) {
         <Text dimColor>  ·  </Text>
         <Text>{stats.players} players · {numberOfTicks} ticks · {duration.toFixed(1)}s</Text>
       </Box>
+      {hasCpu && (
+        <Box>
+          <Text dimColor>CPU </Text>
+          <Text>process </Text>
+          <Text color={cpuTone(system.cpuProcess1m)}>{(system.cpuProcess1m * 100).toFixed(1)}%</Text>
+          <Text>/{(system.cpuProcess15m * 100).toFixed(1)}%</Text>
+          <Text dimColor>  ·  </Text>
+          <Text>system </Text>
+          <Text color={cpuTone(system.cpuSystem1m)}>{(system.cpuSystem1m * 100).toFixed(1)}%</Text>
+          <Text>/{(system.cpuSystem15m * 100).toFixed(1)}%</Text>
+          <Text dimColor> (1m/15m)</Text>
+          {system.cpuThreads > 0 && <Text dimColor>  ·  {system.cpuThreads} cores</Text>}
+        </Box>
+      )}
     </Box>
   );
 }
@@ -99,6 +118,9 @@ function SummaryScreen({
         <Box>
           <Text bold underline>Threads (by total sampled time)</Text>
         </Box>
+        {report.threads.length === 0 && (
+          <Text color="yellow">No thread samples in this report — statistics-only snapshot (CPU/system above).</Text>
+        )}
         {visible.map((t, i) => {
           const idx = start + i;
           const pct = (t.total / totalThreadTime) * 100;
@@ -231,10 +253,8 @@ function App({ input }: { input: string }) {
       try {
         const src = await load(input);
         const report = await parse(src.origin, src.bytes);
-        if (report.threads.length === 0) {
-          setScreen({ kind: "error", message: "Report contains no threads." });
-          return;
-        }
+        // A report can legitimately have zero thread samples (statistics-only
+        // snapshot). Still show the summary so the CPU/system header is visible.
         const main = Math.max(
           0,
           report.threads.findIndex((t) =>
@@ -268,7 +288,7 @@ function App({ input }: { input: string }) {
       else if (mods.downArrow || key === "j") setCursor((c) => Math.min(max, c + 1));
       else if (mods.pageUp) setCursor((c) => Math.max(0, c - 10));
       else if (mods.pageDown) setCursor((c) => Math.min(max, c + 10));
-      else if (mods.return) {
+      else if (mods.return && screen.report.threads.length > 0) {
         setScreen({
           kind: "thread",
           report: screen.report,
@@ -520,7 +540,13 @@ if (args.flagsRepo && !args.input) {
       });
       process.stdout.write(out + "\n");
 
-      if (args.audit) {
+      if ((args.audit || args.byNamespace) && report.threads.length === 0) {
+        console.error(
+          "note: report has no thread samples — skipping audit/namespace rollup (statistics-only snapshot).",
+        );
+      }
+
+      if (args.audit && report.threads.length > 0) {
         const { audit, renderAudit } = await import("./audit.js");
         const findings = await audit(report, {
           top: args.top,
@@ -537,7 +563,7 @@ if (args.flagsRepo && !args.input) {
         }
       }
 
-      if (args.byNamespace) {
+      if (args.byNamespace && report.threads.length > 0) {
         const { aggregateByNamespace, renderNamespaces } = await import(
           "./namespaces.js"
         );
