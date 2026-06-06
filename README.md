@@ -12,6 +12,13 @@ platform : Paper 1.21-DEV-abc1234  MC 1.21
 sampler  : ASYNC/EXECUTION  interval=4000μs
 ticks    : 12000  dur 600.0s  players 50
 TPS      : 20.00 / 20.00 / 20.00   MSPT med 12.4 p95 28.1 max 110.0
+CPU      : process 87.8% / 70.3%   system 72.4% / 72.7%   (1m/15m)  cores 2
+memory   : 87.3 GiB / 123 GiB (71.2%)   uptime 2h 7m
+           AMD Ryzen 9 7950X3D 16-Core Processor
+
+Windows (2 × ~1m — CPU process/system · TPS · MSPT med · players):
+  #1   60.1s   cpu 86.2% / 73.3%   tps 20.00   mspt 0.49   players 10
+  #2   37.9s   cpu 87.4% / 72.5%   tps 19.99   mspt 0.46   players 9
 
 Top 10 self-time hot spots in "Server thread":
   self%    incl%    frame
@@ -119,6 +126,7 @@ sparkcli --flags ~/code/Paper
 - **Fetches** from `spark-usercontent.lucko.me` with the right `Accept: application/x-spark-sampler` header. Spark's response is gzip; Node's built-in `fetch` decodes it.
 - **Decodes** the protobuf payload (`SamplerData`) using the [official spark `.proto`](https://github.com/lucko/spark/tree/master/spark-common/src/main/proto/spark) loaded at runtime via [protobufjs](https://github.com/protobufjs/protobuf.js).
 - **Walks the flattened tree** — spark serializes each thread's call tree post-order DFS into a single `children[]` array; `children_refs[]` are indices into that array. sparkcli rebuilds the tree, computes per-frame self / inclusive time, and ranks.
+- **Surfaces CPU & system stats** — process/system CPU usage (1m/15m), core count (cgroup-capped, so a 2-core cap on a 16-core host is visible), CPU model, memory, uptime, plus the per-window CPU·TPS·MSPT time series from `time_window_statistics`. A report with **zero thread samples** (a statistics-only snapshot) no longer errors — it just shows the CPU/system block.
 - **Audit mode** walks the top-N inclusive frames and locates each one's source file inside a checked-out repo (looks under `paper-server`, `aspaper-server`, `core`, `plugin` source roots). Useful for "what file do I need to read to optimize this hot spot?"
 
 ## Why not just use spark's web viewer?

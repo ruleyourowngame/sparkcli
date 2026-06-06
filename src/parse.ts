@@ -40,10 +40,38 @@ export interface Stats {
   players: number;
 }
 
+// CPU / memory of the whole JVM process & host, from SamplerMetadata.system_statistics.
+// Usage values are fractions (0..1) — e.g. 0.88 == 88% of the available cores.
+export interface SystemStats {
+  cpuProcess1m: number;
+  cpuProcess15m: number;
+  cpuSystem1m: number;
+  cpuSystem15m: number;
+  cpuThreads: number; // cores/threads visible to the process (cgroup-capped)
+  cpuModel: string;
+  memUsed: number;
+  memTotal: number;
+  uptime: number;
+}
+
+// One profiling window (~1 min) from time_window_statistics — a CPU/TPS time series.
+export interface WindowStat {
+  id: number;
+  cpuProcess: number;
+  cpuSystem: number;
+  tps: number;
+  msptMedian: number;
+  msptMax: number;
+  players: number;
+  durationMs: number;
+}
+
 export interface Report {
   origin: string;
   platform: PlatformInfo;
   stats: Stats;
+  system: SystemStats;
+  windows: WindowStat[];
   startTime: number;
   endTime: number;
   numberOfTicks: number;
@@ -109,6 +137,38 @@ export async function parse(origin: string, bytes: Uint8Array): Promise<Report> 
   const mspt = platformStats.mspt ?? {};
   const msptLast1m = mspt.last1m ?? {};
 
+  const sys = meta.systemStatistics ?? {};
+  const cpu = sys.cpu ?? {};
+  const physical = sys.memory?.physical ?? {};
+  const system: SystemStats = {
+    cpuProcess1m: cpu.processUsage?.last1m ?? 0,
+    cpuProcess15m: cpu.processUsage?.last15m ?? 0,
+    cpuSystem1m: cpu.systemUsage?.last1m ?? 0,
+    cpuSystem15m: cpu.systemUsage?.last15m ?? 0,
+    cpuThreads: cpu.threads ?? 0,
+    cpuModel: cpu.modelName ?? "",
+    memUsed: num(physical.used),
+    memTotal: num(physical.total),
+    uptime: num(sys.uptime),
+  };
+
+  const tw = data.timeWindowStatistics ?? {};
+  const windows: WindowStat[] = Object.keys(tw)
+    .map((k) => {
+      const w = tw[k] ?? {};
+      return {
+        id: Number(k),
+        cpuProcess: w.cpuProcess ?? 0,
+        cpuSystem: w.cpuSystem ?? 0,
+        tps: w.tps ?? 0,
+        msptMedian: w.msptMedian ?? 0,
+        msptMax: w.msptMax ?? 0,
+        players: w.players ?? 0,
+        durationMs: w.duration ?? 0,
+      };
+    })
+    .sort((a, b) => a.id - b.id);
+
   const threads: Thread[] = (data.threads ?? []).map((t: any) => {
     const nodes: StackNode[] = (t.children ?? []).map((n: any) => ({
       className: n.className ?? "",
@@ -148,6 +208,8 @@ export async function parse(origin: string, bytes: Uint8Array): Promise<Report> 
       msptMax: msptLast1m.max ?? 0,
       players: num(platformStats.playerCount),
     },
+    system,
+    windows,
     startTime: num(meta.startTime),
     endTime: num(meta.endTime),
     numberOfTicks: meta.numberOfTicks ?? 0,
