@@ -94,6 +94,7 @@ async function loadProto(): Promise<protobuf.Root> {
     [
       path.join(PROTO_DIR, "spark.proto"),
       path.join(PROTO_DIR, "spark_sampler.proto"),
+      path.join(PROTO_DIR, "spark_heap.proto"),
     ],
     { keepCase: false },
   );
@@ -118,6 +119,24 @@ function sumArr(a: number[] | undefined): number {
   return s;
 }
 
+// Pull the host CPU/memory block out of a decoded SystemStatistics object.
+// Shared by sampler and heap reports — both embed the same message.
+export function extractSystemStats(sys: any): SystemStats {
+  const cpu = sys.cpu ?? {};
+  const physical = sys.memory?.physical ?? {};
+  return {
+    cpuProcess1m: cpu.processUsage?.last1m ?? 0,
+    cpuProcess15m: cpu.processUsage?.last15m ?? 0,
+    cpuSystem1m: cpu.systemUsage?.last1m ?? 0,
+    cpuSystem15m: cpu.systemUsage?.last15m ?? 0,
+    cpuThreads: cpu.threads ?? 0,
+    cpuModel: cpu.modelName ?? "",
+    memUsed: num(physical.used),
+    memTotal: num(physical.total),
+    uptime: num(sys.uptime),
+  };
+}
+
 export async function parse(origin: string, bytes: Uint8Array): Promise<Report> {
   const root = await loadProto();
   const SamplerData = root.lookupType("spark.SamplerData");
@@ -137,20 +156,7 @@ export async function parse(origin: string, bytes: Uint8Array): Promise<Report> 
   const mspt = platformStats.mspt ?? {};
   const msptLast1m = mspt.last1m ?? {};
 
-  const sys = meta.systemStatistics ?? {};
-  const cpu = sys.cpu ?? {};
-  const physical = sys.memory?.physical ?? {};
-  const system: SystemStats = {
-    cpuProcess1m: cpu.processUsage?.last1m ?? 0,
-    cpuProcess15m: cpu.processUsage?.last15m ?? 0,
-    cpuSystem1m: cpu.systemUsage?.last1m ?? 0,
-    cpuSystem15m: cpu.systemUsage?.last15m ?? 0,
-    cpuThreads: cpu.threads ?? 0,
-    cpuModel: cpu.modelName ?? "",
-    memUsed: num(physical.used),
-    memTotal: num(physical.total),
-    uptime: num(sys.uptime),
-  };
+  const system = extractSystemStats(meta.systemStatistics ?? {});
 
   const tw = data.timeWindowStatistics ?? {};
   const windows: WindowStat[] = Object.keys(tw)
@@ -217,5 +223,120 @@ export async function parse(origin: string, bytes: Uint8Array): Promise<Report> 
     samplerMode: SAMPLER_MODE[meta.samplerMode ?? 0] ?? "?",
     samplerEngine: SAMPLER_ENGINE[meta.samplerEngine ?? 0] ?? "?",
     threads,
+  };
+}
+
+// ── Heap summary (application/x-spark-heap) ─────────────────────────────────
+// A heap *summary* is the JVM's class histogram (à la `jmap -histo`/
+// `GC.class_histogram`): one row per class with live instance count and the
+// shallow byte size they occupy. It is NOT a full heap dump — there are no
+// reference graphs — but it's exactly what you want to answer "what is eating
+// the heap and why are we pinned near -Xmx".
+
+export interface HeapEntry {
+  /** 1-based rank as spark emitted it (already sorted by size desc). */
+  order: number;
+  /** Live instance count for this class. */
+  instances: number;
+  /** Shallow bytes occupied by all those instances. */
+  size: number;
+  /** Class name, e.g. "byte[]" or "net.minecraft.server.v1_8_R3.Chunk". */
+  type: string;
+}
+
+export interface GcStat {
+  name: string;
+  /** Total collections since start. */
+  total: number;
+  /** Average pause time in ms. */
+  avgTime: number;
+  /** Average ms between collections. */
+  avgFrequency: number;
+}
+
+export interface HeapReport {
+  origin: string;
+  platform: PlatformInfo;
+  system: SystemStats;
+  players: number;
+  /** Epoch ms when the summary was taken. */
+  generatedTime: number;
+  // JVM managed-heap pool (the pool governed by -Xmx). `max` is the cap that
+  // "hitting 4gb" refers to; `used` is live + garbage not yet collected.
+  heapUsed: number;
+  heapCommitted: number;
+  heapInit: number;
+  heapMax: number;
+  nonHeapUsed: number;
+  gc: GcStat[];
+  /** Class histogram, sorted by size desc. */
+  entries: HeapEntry[];
+  totalInstances: number;
+  totalSize: number;
+}
+
+export async function parseHeap(origin: string, bytes: Uint8Array): Promise<HeapReport> {
+  const root = await loadProto();
+  const HeapData = root.lookupType("spark.HeapData");
+  const msg = HeapData.decode(bytes);
+  const data = HeapData.toObject(msg, {
+    longs: Number,
+    enums: Number,
+    defaults: true,
+    arrays: true,
+    objects: true,
+  }) as any;
+
+  const meta = data.metadata ?? {};
+  const platformMeta = meta.platformMetadata ?? {};
+  const platformStats = meta.platformStatistics ?? {};
+  const heap = platformStats.memory?.heap ?? {};
+  const nonHeap = platformStats.memory?.nonHeap ?? {};
+
+  const gc: GcStat[] = Object.entries(platformStats.gc ?? {}).map(
+    ([name, g]: [string, any]) => ({
+      name,
+      total: num(g.total),
+      avgTime: g.avgTime ?? 0,
+      avgFrequency: g.avgFrequency ?? 0,
+    }),
+  );
+
+  const entries: HeapEntry[] = (data.entries ?? [])
+    .map((e: any) => ({
+      order: e.order ?? 0,
+      instances: num(e.instances),
+      size: num(e.size),
+      type: e.type ?? "",
+    }))
+    .sort((a: HeapEntry, b: HeapEntry) => b.size - a.size);
+
+  let totalInstances = 0;
+  let totalSize = 0;
+  for (const e of entries) {
+    totalInstances += e.instances;
+    totalSize += e.size;
+  }
+
+  return {
+    origin,
+    platform: {
+      name: platformMeta.name ?? "",
+      version: platformMeta.version ?? "",
+      minecraftVersion: platformMeta.minecraftVersion ?? "",
+      brand: platformMeta.brand ?? "",
+    },
+    system: extractSystemStats(meta.systemStatistics ?? {}),
+    players: num(platformStats.playerCount),
+    generatedTime: num(meta.generatedTime),
+    heapUsed: num(heap.used),
+    heapCommitted: num(heap.committed),
+    heapInit: num(heap.init),
+    heapMax: num(heap.max),
+    nonHeapUsed: num(nonHeap.used),
+    gc,
+    entries,
+    totalInstances,
+    totalSize,
   };
 }

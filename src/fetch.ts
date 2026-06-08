@@ -7,6 +7,11 @@ const VIEWER = "spark.lucko.me";
 export interface Source {
   origin: string;
   bytes: Uint8Array;
+  /**
+   * MIME type the payload was stored as, e.g. `application/x-spark-sampler`
+   * or `application/x-spark-heap`. Empty for local files (sniff by content).
+   */
+  contentType: string;
 }
 
 function extractCode(input: string): string | null {
@@ -26,7 +31,7 @@ function extractCode(input: string): string | null {
 export async function load(input: string): Promise<Source> {
   if (existsSync(input)) {
     const buf = await readFile(input);
-    return { origin: input, bytes: new Uint8Array(buf) };
+    return { origin: input, bytes: new Uint8Array(buf), contentType: "" };
   }
 
   const code = extractCode(input);
@@ -37,7 +42,10 @@ export async function load(input: string): Promise<Source> {
   const url = `${USERCONTENT}/${code}`;
   const res = await fetch(url, {
     headers: {
-      Accept: "application/x-spark-sampler",
+      // usercontent ignores Accept and serves whatever was stored, but list
+      // every format we can read so the request stays honest / future-proof.
+      Accept:
+        "application/x-spark-sampler, application/x-spark-heap, application/x-spark-health",
       Referer: "https://spark.lucko.me/",
     },
   });
@@ -45,5 +53,6 @@ export async function load(input: string): Promise<Source> {
     throw new Error(`Fetch ${url} failed: ${res.status} ${res.statusText}`);
   }
   const ab = await res.arrayBuffer();
-  return { origin: url, bytes: new Uint8Array(ab) };
+  const contentType = (res.headers.get("content-type") ?? "").toLowerCase();
+  return { origin: url, bytes: new Uint8Array(ab), contentType };
 }

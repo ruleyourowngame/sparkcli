@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import React, { useEffect, useMemo, useState } from "react";
 import { render, Box, Text, useApp, useInput } from "ink";
-import { load } from "./fetch.js";
+import { load, type Source } from "./fetch.js";
 import { parse, type Report, type Thread } from "./parse.js";
 import {
   hotSpots,
@@ -243,7 +243,7 @@ function ThreadTree({
   );
 }
 
-function App({ input }: { input: string }) {
+function App({ source }: { source: Source }) {
   const { exit } = useApp();
   const [screen, setScreen] = useState<Screen>({ kind: "loading" });
   const [cursor, setCursor] = useState(0);
@@ -251,8 +251,7 @@ function App({ input }: { input: string }) {
   useEffect(() => {
     (async () => {
       try {
-        const src = await load(input);
-        const report = await parse(src.origin, src.bytes);
+        const report = await parse(source.origin, source.bytes);
         // A report can legitimately have zero thread samples (statistics-only
         // snapshot). Still show the summary so the CPU/system header is visible.
         const main = Math.max(
@@ -267,7 +266,7 @@ function App({ input }: { input: string }) {
         setScreen({ kind: "error", message: e instanceof Error ? e.message : String(e) });
       }
     })();
-  }, [input]);
+  }, [source]);
 
   useInput((key, mods) => {
     if (mods.ctrl && key === "c") {
@@ -375,7 +374,7 @@ function App({ input }: { input: string }) {
     return (
       <Box paddingX={1}>
         <Text>
-          <Text color="cyan">…</Text> loading <Text dimColor>{input}</Text>
+          <Text color="cyan">…</Text> loading <Text dimColor>{source.origin}</Text>
         </Text>
       </Box>
     );
@@ -429,6 +428,9 @@ interface ParsedArgs {
   flagsRepo?: string;
   chain?: string;
   byNamespace?: boolean;
+  heap?: boolean;
+  hprof?: boolean;
+  retainers?: string;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -457,6 +459,19 @@ function parseArgs(argv: string[]): ParsedArgs {
       case "--by-namespace":
       case "--by-plugin":
         args.byNamespace = true;
+        args.tui = false;
+        break;
+      case "--heap":
+        args.heap = true;
+        args.tui = false;
+        break;
+      case "--hprof":
+        args.hprof = true;
+        args.tui = false;
+        break;
+      case "--retainers":
+      case "--retained-by":
+        args.retainers = argv[++i];
         args.tui = false;
         break;
       case "-h":
@@ -490,7 +505,10 @@ function printUsage() {
       "  --tui            force interactive Ink TUI",
       "  --no-tui         force batch text output",
       "  --json           batch JSON output (implies --no-tui)",
-      "  --top N          rows per hot-spot section (default 25)",
+      "  --heap           force heap-summary mode (auto-detected for x-spark-heap URLs)",
+      "  --hprof          force JVM heap-dump mode for a local .hprof (auto-detected by magic)",
+      "  --retainers CLS  .hprof: show which classes reference instances of CLS (e.g. 'char[]')",
+      "  --top N          rows per hot-spot / heap-class / retainer section (default 25)",
       "  --thread NAME    target thread (substring match; default: Server thread)",
       "  --audit PATH     map top frames to source files inside a repo (e.g. a Paper fork checkout)",
       "  --min-pct N      audit: only frames with inclusive >= N% (default 0.1)",
@@ -506,6 +524,10 @@ function printUsage() {
       "  sparkcli AbCdEfGhIj",
       "  sparkcli ./report.bin --no-tui --top 30",
       "  sparkcli AbCdEfGhIj --json | jq '.frames[0]'",
+      "  sparkcli https://spark.lucko.me/HeapCode --top 30   # heap summary, auto-detected",
+      "  sparkcli ./heap.bin --heap --json | jq '.topClasses[0]'",
+      "  sparkcli ./dump.hprof --top 30                      # JVM heap dump class histogram",
+      "  sparkcli ./dump.hprof --retainers 'char[]'          # who is holding the char[]",
     ].join("\n"),
   );
 }
@@ -522,15 +544,49 @@ if (args.flagsRepo && !args.input) {
     const flags = await discoverFlags(args.flagsRepo!);
     process.stdout.write(renderFlags(flags, args.color) + "\n");
   })();
-} else if (args.tui) {
-  render(<App input={args.input} />);
 } else {
   (async () => {
-    const { load } = await import("./fetch.js");
-    const { parse } = await import("./parse.js");
-    const { renderText } = await import("./report.js");
     try {
+      // JVM heap dumps (.hprof) are huge & binary — stream them straight off
+      // disk via a bounded-memory parser; NEVER load() the whole file.
+      const { existsSync } = await import("node:fs");
+      if (existsSync(args.input)) {
+        const { isHprofFile, hprofHistogram, hprofRetainers, renderHprofHistogram, renderHprofRetainers } =
+          await import("./hprof.js");
+        if (args.retainers || args.hprof || isHprofFile(args.input)) {
+          if (args.retainers) {
+            const rr = hprofRetainers(args.input, args.retainers);
+            process.stdout.write(renderHprofRetainers(rr, { color: args.color, json: args.json, top: args.top }) + "\n");
+          } else {
+            const h = hprofHistogram(args.input, Math.max(args.top, 1000));
+            process.stdout.write(renderHprofHistogram(h, { color: args.color, json: args.json, top: args.top }) + "\n");
+          }
+          return;
+        }
+      }
+
       const src = await load(args.input);
+
+      // Heap summaries carry no thread samples to navigate, so render the flat
+      // class histogram in batch even under a TTY. Auto-detected from the
+      // stored content-type, or forced with --heap (e.g. for local .bin files).
+      const isHeap = args.heap || src.contentType.includes("x-spark-heap");
+      if (isHeap) {
+        const { parseHeap } = await import("./parse.js");
+        const { renderHeap } = await import("./heap.js");
+        const heap = await parseHeap(src.origin, src.bytes);
+        process.stdout.write(
+          renderHeap(heap, { top: args.top, color: args.color, json: args.json }) + "\n",
+        );
+        return;
+      }
+
+      if (args.tui) {
+        render(<App source={src} />);
+        return;
+      }
+
+      const { renderText } = await import("./report.js");
       const report = await parse(src.origin, src.bytes);
       const out = renderText(report, {
         top: args.top,
