@@ -195,12 +195,13 @@ function paint(s: string, code: string, color: boolean): string {
 export function renderNamespaces(
   buckets: NamespaceBucket[],
   threadTotal: number,
-  opts: { top: number; color: boolean; minPct: number },
+  opts: { top: number; color: boolean; minPct: number; alloc?: boolean },
 ): string {
   const sorted = [...buckets].sort((a, b) => b.self - a.self);
 
   const out: string[] = [];
-  out.push(paint("─── namespace rollup (self-time per package) ───────────", C.cyan, opts.color));
+  const metric = opts.alloc ? "self-bytes per package" : "self-time per package";
+  out.push(paint(`─── namespace rollup (${metric}) ───────────`, C.cyan, opts.color));
   out.push(
     paint(
       `${"self%".padStart(7)}  ${"incl%".padStart(7)}  ${"frames".padStart(6)}  bucket`,

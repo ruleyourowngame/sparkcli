@@ -636,6 +636,7 @@ if (args.flagsRepo && !args.input) {
           top: args.top,
           color: args.color,
           minPct: args.minPct,
+          alloc: report.samplerMode === "ALLOCATION",
         });
         process.stdout.write(
           "\n" +

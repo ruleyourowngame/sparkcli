@@ -82,10 +82,14 @@ export function renderText(report: Report, opts: ReportOptions): string {
 
   const platform = `${report.platform.brand || report.platform.name} ${report.platform.version}`;
   const duration = (report.endTime - report.startTime) / 1000;
+  const isAlloc = report.samplerMode === "ALLOCATION";
 
   out.push(paint("─── spark report ───────────────────────────────────────", C.cyan, c));
   out.push(`${paint("platform :", C.dim, c)} ${paint(platform, C.bold, c)}  ${paint("MC", C.dim, c)} ${report.platform.minecraftVersion}`);
-  out.push(`${paint("sampler  :", C.dim, c)} ${report.samplerEngine}/${report.samplerMode}  interval=${report.interval}μs`);
+  // In ALLOCATION mode `interval` is the async-profiler sampling threshold in
+  // bytes (e.g. 512 KiB), not a time interval — labelling it μs is just wrong.
+  const intervalStr = isAlloc ? fmtBytes(report.interval) : `${report.interval}μs`;
+  out.push(`${paint("sampler  :", C.dim, c)} ${report.samplerEngine}/${report.samplerMode}  interval=${intervalStr}`);
   out.push(`${paint("source   :", C.dim, c)} ${report.origin}`);
   out.push(`${paint("ticks    :", C.dim, c)} ${report.numberOfTicks}  ${paint("dur", C.dim, c)} ${duration.toFixed(1)}s  ${paint("players", C.dim, c)} ${report.stats.players}`);
 
@@ -97,11 +101,22 @@ export function renderText(report: Report, opts: ReportOptions): string {
       `p95 ${tps.msptP95.toFixed(1)} max ${tps.msptMax.toFixed(1)}`,
   );
 
+  const totalAll = report.threads.reduce((s, t) => s + t.total, 0) || 1;
+
+  // For an allocation profile the single most useful number is the rate: how
+  // fast the server is producing garbage (and therefore how hard the GC works).
+  if (isAlloc) {
+    const rate = duration > 0 ? totalAll / duration : 0;
+    out.push(
+      `${paint("alloc    :", C.dim, c)} ${paint(fmtBytes(totalAll), C.bold, c)} sampled over ${duration.toFixed(1)}s` +
+        `   ${paint("rate", C.dim, c)} ${paint(fmtBytes(rate) + "/s", rate >= 100 * 1024 * 1024 ? C.red : rate >= 25 * 1024 * 1024 ? C.yellow : C.green, c)}`,
+    );
+  }
+
   out.push(...renderSystem(report, c));
 
-  const totalAll = report.threads.reduce((s, t) => s + t.total, 0) || 1;
   out.push("");
-  out.push(paint(`Threads (${report.threads.length}):`, C.bold, c));
+  out.push(paint(`Threads (${report.threads.length})${isAlloc ? " — share of allocations" : ""}:`, C.bold, c));
   for (const t of report.threads.slice(0, Math.min(10, report.threads.length))) {
     const pct = (t.total / totalAll) * 100;
     out.push(`  ${pct.toFixed(1).padStart(5)}%  ${t.name}`);
@@ -124,17 +139,23 @@ export function renderText(report: Report, opts: ReportOptions): string {
   const all = hotSpots(thread);
   const total = thread.total || 1;
 
-  out.push("");
-  out.push(paint(`Top ${opts.top} self-time hot spots in "${thread.name}":`, C.bold, c));
-  out.push(paint("  self%    incl%    frame", C.dim, c));
-  const bySelf = [...all].sort((a, b) => b.self - a.self).slice(0, opts.top);
-  for (const f of bySelf) out.push(renderRow(f, total, c, "self"));
+  // In allocation mode the metric is bytes allocated, not CPU time — say so,
+  // and print the absolute amount next to each frame's share.
+  const noun = isAlloc ? "allocating frames" : "self-time hot spots";
+  const colHead = isAlloc ? "  self%    incl%    self-bytes  frame" : "  self%    incl%    frame";
+  const inclColHead = isAlloc ? "  incl%    self%    incl-bytes  frame" : "  incl%    self%    frame";
 
   out.push("");
-  out.push(paint(`Top ${opts.top} inclusive hot spots in "${thread.name}":`, C.bold, c));
-  out.push(paint("  incl%    self%    frame", C.dim, c));
+  out.push(paint(`Top ${opts.top} ${noun} in "${thread.name}":`, C.bold, c));
+  out.push(paint(colHead, C.dim, c));
+  const bySelf = [...all].sort((a, b) => b.self - a.self).slice(0, opts.top);
+  for (const f of bySelf) out.push(renderRow(f, total, c, "self", isAlloc));
+
+  out.push("");
+  out.push(paint(`Top ${opts.top} ${isAlloc ? "allocation call paths (inclusive)" : "inclusive hot spots"} in "${thread.name}":`, C.bold, c));
+  out.push(paint(inclColHead, C.dim, c));
   const byIncl = [...all].sort((a, b) => b.inclusive - a.inclusive).slice(0, opts.top);
-  for (const f of byIncl) out.push(renderRow(f, total, c, "incl"));
+  for (const f of byIncl) out.push(renderRow(f, total, c, "incl", isAlloc));
 
   return out.join("\n");
 }
@@ -181,7 +202,13 @@ function renderSystem(report: Report, c: boolean): string[] {
   return out;
 }
 
-function renderRow(f: Frame, total: number, color: boolean, leading: "self" | "incl"): string {
+function renderRow(
+  f: Frame,
+  total: number,
+  color: boolean,
+  leading: "self" | "incl",
+  showBytes = false,
+): string {
   const selfPct = (f.self / total) * 100;
   const inclPct = (f.inclusive / total) * 100;
   const a = leading === "self" ? selfPct : inclPct;
@@ -189,8 +216,13 @@ function renderRow(f: Frame, total: number, color: boolean, leading: "self" | "i
   const aStr = formatPct(a).padStart(7);
   const bStr = formatPct(b).padStart(7);
   const aCol = a >= 5 ? C.red : a >= 1 ? C.yellow : C.dim;
+  // In alloc mode self/inclusive are already byte counts — surface the absolute
+  // amount so a 5% frame on a 4 GiB profile reads as the 200 MiB it really is.
+  const bytesStr = showBytes
+    ? "  " + paint(fmtBytes(leading === "self" ? f.self : f.inclusive).padStart(9), C.gray, color)
+    : "";
   const label = `${shortClass(f.className)}.${f.methodName}${f.lineNumber > 0 ? ":" + f.lineNumber : ""}`;
-  return `  ${paint(aStr, aCol, color)}  ${paint(bStr, C.dim, color)}  ${label}`;
+  return `  ${paint(aStr, aCol, color)}  ${paint(bStr, C.dim, color)}${bytesStr}  ${label}`;
 }
 
 function renderJson(report: Report, opts: ReportOptions): string {
@@ -200,14 +232,26 @@ function renderJson(report: Report, opts: ReportOptions): string {
   const frames = thread
     ? hotSpots(thread).sort((a, b) => b.self - a.self).slice(0, opts.top)
     : [];
+  const duration = (report.endTime - report.startTime) / 1000;
+  const isAlloc = report.samplerMode === "ALLOCATION";
+  const totalAll = report.threads.reduce((s, t) => s + t.total, 0);
   return JSON.stringify(
     {
       platform: report.platform,
+      samplerMode: report.samplerMode,
+      samplerEngine: report.samplerEngine,
+      // unit of `self`/`inclusive`/`total`/`threadTotal` below
+      metricUnit: isAlloc ? "bytes" : "samples",
+      interval: report.interval,
+      intervalUnit: isAlloc ? "bytes" : "microseconds",
+      ...(isAlloc
+        ? { totalAllocated: totalAll, allocBytesPerSec: duration > 0 ? totalAll / duration : 0 }
+        : {}),
       stats: report.stats,
       system: report.system,
       windows: report.windows,
       ticks: report.numberOfTicks,
-      duration: (report.endTime - report.startTime) / 1000,
+      duration,
       threads: report.threads.map((t) => ({ name: t.name, total: t.total })),
       thread: thread?.name ?? null,
       threadTotal: thread?.total ?? 0,
