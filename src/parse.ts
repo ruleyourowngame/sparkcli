@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import protobuf from "protobufjs";
+import { computeBusy } from "./busy.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PROTO_DIR = path.resolve(here, "proto");
@@ -21,6 +22,9 @@ export interface Thread {
   childrenRefs: number[];
   nodes: StackNode[];
   total: number;
+  /** total minus samples inside park/wait/epoll idle sinks (see busy.ts). */
+  busy: number;
+  idle: number;
 }
 
 export interface PlatformInfo {
@@ -186,16 +190,24 @@ export async function parse(origin: string, bytes: Uint8Array): Promise<Report> 
       childrenRefs: (n.childrenRefs ?? []) as number[],
     }));
     const times = (t.times ?? []) as number[];
-    return {
+    const thread: Thread = {
       name: t.name ?? "",
       times,
       childrenRefs: (t.childrenRefs ?? []) as number[],
       nodes,
       total: sumArr(times),
+      busy: 0,
+      idle: 0,
     };
+    const { busy, idle } = computeBusy(thread);
+    thread.busy = busy;
+    thread.idle = idle;
+    return thread;
   });
 
-  threads.sort((a, b) => b.total - a.total);
+  // Busy-first: a pool of 50 parked workers out-samples the one thread doing
+  // real work; raw total is a misleading rank (tie-broken by total).
+  threads.sort((a, b) => b.busy - a.busy || b.total - a.total);
 
   return {
     origin,

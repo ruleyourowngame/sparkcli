@@ -110,26 +110,28 @@ function SummaryScreen({
   const listRows = Math.max(5, termRows - HEADER_HEIGHT - 4);
   const start = Math.max(0, Math.min(cursor - Math.floor(listRows / 2), report.threads.length - listRows));
   const visible = report.threads.slice(start, start + listRows);
-  const totalThreadTime = report.threads.reduce((s, t) => s + t.total, 0) || 1;
+  const busyAll = report.threads.reduce((s, t) => s + t.busy, 0) || 1;
   return (
     <Box flexDirection="column">
       <Header report={report} />
       <Box flexDirection="column" paddingX={1}>
         <Box>
-          <Text bold underline>Threads (by total sampled time)</Text>
+          <Text bold underline>Threads (by busy time — park/wait excluded)</Text>
+          <Text dimColor>  busy%all · busy/thr</Text>
         </Box>
         {report.threads.length === 0 && (
           <Text color="yellow">No thread samples in this report — statistics-only snapshot (CPU/system above).</Text>
         )}
         {visible.map((t, i) => {
           const idx = start + i;
-          const pct = (t.total / totalThreadTime) * 100;
+          const pctAll = (t.busy / busyAll) * 100;
+          const pctThr = t.total > 0 ? (t.busy / t.total) * 100 : 0;
           const sel = idx === cursor;
           return (
             <Box key={idx}>
               <Text color={sel ? "black" : undefined} backgroundColor={sel ? "cyan" : undefined}>
                 {sel ? "▸ " : "  "}
-                {pct.toFixed(1).padStart(5)}%  {truncate(t.name, 80)}
+                {pctAll.toFixed(1).padStart(5)}%  {pctThr.toFixed(0).padStart(3)}%  {truncate(t.name, 74)}
               </Text>
             </Box>
           );
@@ -428,6 +430,10 @@ interface ParsedArgs {
   flagsRepo?: string;
   chain?: string;
   byNamespace?: boolean;
+  allThreads?: boolean;
+  focus?: string;
+  tree?: boolean;
+  depth: number;
   heap?: boolean;
   hprof?: boolean;
   retainers?: string;
@@ -441,6 +447,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     json: false,
     color: process.stdout.isTTY === true && !process.env["NO_COLOR"],
     minPct: 0.1,
+    depth: 8,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
@@ -460,6 +467,22 @@ function parseArgs(argv: string[]): ParsedArgs {
       case "--by-plugin":
         args.byNamespace = true;
         args.tui = false;
+        break;
+      case "--all-threads":
+      case "--threads":
+        args.allThreads = true;
+        args.tui = false;
+        break;
+      case "--focus":
+        args.focus = argv[++i];
+        args.tui = false;
+        break;
+      case "--tree":
+        args.tree = true;
+        args.tui = false;
+        break;
+      case "--depth":
+        args.depth = parseInt(argv[++i] ?? "8", 10);
         break;
       case "--heap":
         args.heap = true;
@@ -510,6 +533,14 @@ function printUsage() {
       "  --retainers CLS  .hprof: show which classes reference instances of CLS (e.g. 'char[]')",
       "  --top N          rows per hot-spot / heap-class / retainer section (default 25)",
       "  --thread NAME    target thread (substring match; default: Server thread)",
+      "  --all-threads    rank ALL threads by busy (non-idle) time with their top busy",
+      "                   frames, plus a cross-thread busy-frame rollup. Park/wait/epoll",
+      "                   idle sinks are excluded — a pool of 50 sleeping workers stops",
+      "                   outranking the one thread doing real work. Alias: --threads",
+      "  --tree           batch top-down call tree of the target thread (see --depth)",
+      "  --focus SUBSTR   drill into every frame matching SUBSTR in the target thread:",
+      "                   caller chains to it + the merged tree below it",
+      "  --depth N        max depth for --tree / --focus subtree (default 8)",
       "  --audit PATH     map top frames to source files inside a repo (e.g. a Paper fork checkout)",
       "  --min-pct N      audit: only frames with inclusive >= N% (default 0.1)",
       "  --flags PATH     discover -Dasp.* runtime toggles in a repo and list them",
@@ -586,13 +617,38 @@ if (args.flagsRepo && !args.input) {
         return;
       }
 
-      const { renderText } = await import("./report.js");
+      const { renderText, pickThread } = await import("./report.js");
       const report = await parse(src.origin, src.bytes);
+
+      // --focus / --tree: standalone drill-down sections, no full report body.
+      if (args.focus || args.tree) {
+        const { renderFocus, renderTree } = await import("./focus.js");
+        const thread = pickThread(report, args.thread);
+        const sections: string[] = [];
+        if (args.tree) {
+          sections.push(renderTree(thread, { color: args.color, minPct: Math.max(args.minPct, 0.2), depth: args.depth }));
+        }
+        if (args.focus) {
+          sections.push(
+            renderFocus(thread, args.focus, {
+              color: args.color,
+              minPct: Math.max(args.minPct, 0.1),
+              depth: args.depth,
+              top: args.top,
+            }),
+          );
+        }
+        process.stdout.write(sections.join("\n\n") + "\n");
+        return;
+      }
+
       const out = renderText(report, {
         top: args.top,
         thread: args.thread,
         color: args.color,
         json: args.json,
+        allThreads: args.allThreads,
+        minPct: args.minPct,
       });
       process.stdout.write(out + "\n");
 
