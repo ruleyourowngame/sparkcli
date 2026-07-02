@@ -85,8 +85,12 @@ sparkcli <spark-url | code | file> [flags]
 | `--json` | JSON output (implies `--no-tui`) — pipe through `jq` |
 | `--top N` | rows per hot-spot section (default 25) |
 | `--thread NAME` | target thread (substring match; default: `Server thread`) |
+| `--all-threads` | rank ALL threads by busy (non-idle) time + cross-thread busy-frame rollup. Park/wait/epoll idle sinks are excluded, so 50 sleeping pool workers stop outranking the one thread doing real work. Alias: `--threads` |
+| `--tree` | batch top-down call tree of the target thread |
+| `--focus SUBSTR` | drill into frames matching SUBSTR: caller chains to them + the merged tree below them |
+| `--depth N` | max depth for `--tree` / `--focus` subtree (default 8) |
 | `--audit PATH` | map top frames to source files inside a repo |
-| `--min-pct N` | audit: only frames with inclusive ≥ N% (default 0.1) |
+| `--min-pct N` | audit/tree/focus/all-threads: hide rows below N% (default 0.1) |
 | `--flags PATH` | scan a repo for `-Dasp.*` runtime toggles |
 | `--color` / `--no-color` | force/disable ANSI color |
 
@@ -101,6 +105,15 @@ sparkcli AbCdEfGhIj --no-tui --top 30
 
 # Machine-readable JSON for scripting
 sparkcli ./report.bin --json | jq '.frames[] | select(.selfPct > 1.0)'
+
+# Which threads actually burn CPU (idle park time excluded)?
+sparkcli AbCdEfGhIj --all-threads --top 30
+
+# Who calls this hot method, and what runs beneath it?
+sparkcli AbCdEfGhIj --thread "Netty Epoll" --focus "Connection\$2.write" --depth 20
+
+# Batch call tree of a world ticker thread
+sparkcli AbCdEfGhIj --thread "universe-world-ticker" --tree --depth 10 --min-pct 1
 
 # Audit: map hot frames to source files in a checked-out Paper fork
 sparkcli https://spark.lucko.me/AbCdEfGhIj --audit ~/code/Paper --top 20

@@ -1,11 +1,15 @@
 import type { Report, Thread } from "./parse.js";
 import { hotSpots, formatPct, shortClass, type Frame } from "./analyze.js";
+import { renderAllThreads, allThreadsJson } from "./busy.js";
 
 export interface ReportOptions {
   top: number;
   thread?: string;
   color: boolean;
   json: boolean;
+  /** Busy-ranked per-thread + cross-thread view instead of one thread's hot spots. */
+  allThreads?: boolean;
+  minPct?: number;
 }
 
 const C = {
@@ -58,7 +62,7 @@ function fmtUptime(ms: number): string {
   return `${m}m`;
 }
 
-function pickThread(report: Report, query?: string): Thread {
+export function pickThread(report: Report, query?: string): Thread {
   if (!query) {
     return (
       report.threads.find((t) => /^Server thread$/i.test(t.name)) ??
@@ -116,10 +120,25 @@ export function renderText(report: Report, opts: ReportOptions): string {
   out.push(...renderSystem(report, c));
 
   out.push("");
-  out.push(paint(`Threads (${report.threads.length})${isAlloc ? " — share of allocations" : ""}:`, C.bold, c));
+  const busyAll = report.threads.reduce((s, t) => s + t.busy, 0) || 1;
+  out.push(
+    paint(
+      `Threads (${report.threads.length})${isAlloc ? " — share of allocations" : " — busy%all · busy/thr (idle park/wait excluded)"}:`,
+      C.bold,
+      c,
+    ),
+  );
   for (const t of report.threads.slice(0, Math.min(10, report.threads.length))) {
-    const pct = (t.total / totalAll) * 100;
-    out.push(`  ${pct.toFixed(1).padStart(5)}%  ${t.name}`);
+    if (isAlloc) {
+      const pct = (t.total / totalAll) * 100;
+      out.push(`  ${pct.toFixed(1).padStart(5)}%  ${t.name}`);
+    } else {
+      const pctAll = (t.busy / busyAll) * 100;
+      const pctThr = t.total > 0 ? (t.busy / t.total) * 100 : 0;
+      out.push(
+        `  ${pctAll.toFixed(1).padStart(5)}%  ${paint(pctThr.toFixed(0).padStart(3) + "%", C.dim, c)}  ${t.name}`,
+      );
+    }
   }
   if (report.threads.length > 10) out.push(paint(`  ... +${report.threads.length - 10} more`, C.dim, c));
 
@@ -131,6 +150,18 @@ export function renderText(report: Report, opts: ReportOptions): string {
         C.yellow,
         c,
       ),
+    );
+    return out.join("\n");
+  }
+
+  if (opts.allThreads) {
+    out.push("");
+    out.push(
+      renderAllThreads(report, {
+        top: opts.top,
+        color: c,
+        minPct: opts.minPct ?? 0.1,
+      }),
     );
     return out.join("\n");
   }
@@ -252,7 +283,8 @@ function renderJson(report: Report, opts: ReportOptions): string {
       windows: report.windows,
       ticks: report.numberOfTicks,
       duration,
-      threads: report.threads.map((t) => ({ name: t.name, total: t.total })),
+      threads: report.threads.map((t) => ({ name: t.name, total: t.total, busy: t.busy, idle: t.idle })),
+      ...(opts.allThreads ? { allThreads: allThreadsJson(report, opts.top) } : {}),
       thread: thread?.name ?? null,
       threadTotal: thread?.total ?? 0,
       frames: frames.map((f) => ({
