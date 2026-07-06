@@ -55,6 +55,56 @@ export function isIdleFrame(n: StackNode): boolean {
   return false;
 }
 
+// A frame whose "class" is a native image (libc.so.6, libjvm.so, an extracted
+// /tmp/loaderXXX.tmp, "native", ...) rather than a Java class.
+export function isNativeFrame(n: StackNode): boolean {
+  const c = n.className;
+  if (!c) return true;
+  return c === "native" || c.includes(".so") || c.startsWith("/") || c.endsWith(".tmp");
+}
+
+/**
+ * Busy time under native-ROOTED stacks: call chains that never pass through a
+ * Java frame (threads created by a native lib, or stacks the profiler could
+ * not unwind into Java). A raw `syscall` leaf there is unattributable — the
+ * sampler cannot tell a blocked futex/io_uring wait from a busy poll, so this
+ * time may be 100% idle. Field-tested: 35 JNIC/Polar threads parked in futex
+ * showed up as "94% busy in syscall" and dwarfed the real hot spots.
+ * Verify with ground truth (`/proc/<pid>/task/<tid>/stat` deltas + `wchan`).
+ */
+// JVM service threads (GC workers, JIT compilers, VM thread) legitimately
+// live in native code — their native-rooted time is real work, not a blocked
+// syscall masquerading as busy. Suppress the warning for them.
+const JVM_NATIVE_THREADS =
+  /^(Z(Worker|Driver|Director|Stat|Uncommitter)|G1 |GC |C[12] CompilerThre|VM Thread|VM Periodic|Service Thread|Monitor Deflati|Notification Thread|Common-Cleaner|Async-profiler|spark-async-sampler)/;
+
+export function isJvmNativeThread(name: string): boolean {
+  return JVM_NATIVE_THREADS.test(name);
+}
+
+export function nativeRootedBusy(thread: Thread): number {
+  if (isJvmNativeThread(thread.name)) return 0;
+  let acc = 0;
+  const walkBusy = (ref: number) => {
+    const n = thread.nodes[ref];
+    if (!n) return;
+    if (isIdleFrame(n)) return;
+    let childInclusive = 0;
+    for (const c of n.childrenRefs) {
+      const cn = thread.nodes[c];
+      if (!cn) continue;
+      childInclusive += sumTimes(cn.times);
+      walkBusy(c);
+    }
+    acc += Math.max(0, sumTimes(n.times) - childInclusive);
+  };
+  for (const root of thread.childrenRefs) {
+    const n = thread.nodes[root];
+    if (n && isNativeFrame(n)) walkBusy(root);
+  }
+  return acc;
+}
+
 function sumTimes(times: number[]): number {
   let s = 0;
   for (const v of times) s += v;
@@ -221,6 +271,7 @@ export function renderAllThreads(
   out.push(paint(`${"busy%all".padStart(9)}  ${"busy/thr".padStart(8)}  thread`, C.dim, c));
 
   let shown = 0;
+  const byName = new Map(report.threads.map((t) => [t.name, t]));
   for (const r of rows) {
     const pctAll = (r.busy / busyAll) * 100;
     if (pctAll < opts.minPct) continue;
@@ -228,8 +279,14 @@ export function renderAllThreads(
     shown++;
     const pctThr = r.total > 0 ? (r.busy / r.total) * 100 : 0;
     const col = pctAll >= 10 ? C.red : pctAll >= 3 ? C.yellow : C.dim;
+    const t = byName.get(r.name);
+    const nativeFrac = t && t.busy > 0 ? nativeRootedBusy(t) / t.busy : 0;
+    const warn =
+      nativeFrac > 0.5
+        ? paint(`  ⚠ ${(nativeFrac * 100).toFixed(0)}% native-rooted — may be blocked syscalls, not CPU`, C.yellow, c)
+        : "";
     out.push(
-      `${paint(formatPct(pctAll).padStart(9), col, c)}  ${paint(formatPct(pctThr).padStart(8), C.dim, c)}  ${paint(r.name, C.bold, c)}`,
+      `${paint(formatPct(pctAll).padStart(9), col, c)}  ${paint(formatPct(pctThr).padStart(8), C.dim, c)}  ${paint(r.name, C.bold, c)}${warn}`,
     );
     for (const f of r.topFrames) {
       if (f.self <= 0) continue;

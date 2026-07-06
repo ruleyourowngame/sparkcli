@@ -430,6 +430,8 @@ interface ParsedArgs {
   flagsRepo?: string;
   chain?: string;
   byNamespace?: boolean;
+  bySource?: boolean;
+  sources?: boolean;
   allThreads?: boolean;
   focus?: string;
   tree?: boolean;
@@ -464,8 +466,17 @@ function parseArgs(argv: string[]): ParsedArgs {
       case "--flags": args.flagsRepo = argv[++i]; args.tui = false; break;
       case "--chain": args.chain = argv[++i]; args.tui = false; break;
       case "--by-namespace":
-      case "--by-plugin":
         args.byNamespace = true;
+        args.tui = false;
+        break;
+      case "--by-source":
+      case "--by-plugin":
+        args.bySource = true;
+        args.tui = false;
+        break;
+      case "--sources":
+      case "--plugins":
+        args.sources = true;
         args.tui = false;
         break;
       case "--all-threads":
@@ -545,8 +556,12 @@ function printUsage() {
       "  --min-pct N      audit: only frames with inclusive >= N% (default 0.1)",
       "  --flags PATH     discover -Dasp.* runtime toggles in a repo and list them",
       "  --by-namespace   roll up self-time by package prefix (Paper, plugins, Netty, ...).",
-      "                   Alias: --by-plugin. Surfaces cumulative cost of plugin code",
-      "                   whose individual frames sit below the top-N cutoff.",
+      "                   Surfaces cumulative cost of plugin code whose individual",
+      "                   frames sit below the top-N cutoff.",
+      "  --by-source      roll up busy self-time across ALL threads by owning plugin",
+      "                   (spark class_sources; works on obfuscated plugins) with",
+      "                   native-lib and package fallbacks. Alias: --by-plugin.",
+      "  --sources        list installed plugins/mods (name, version, author)",
       "  --color          force ANSI color",
       "  --no-color       disable ANSI color",
       "",
@@ -673,6 +688,20 @@ if (args.flagsRepo && !args.input) {
         if (flags.length > 0) {
           process.stdout.write("\n" + renderFlags(flags, args.color) + "\n");
         }
+      }
+
+      if (args.sources) {
+        const { renderSources } = await import("./sources.js");
+        process.stdout.write("\n" + renderSources(report, { color: args.color }) + "\n");
+      }
+
+      if (args.bySource && report.threads.length > 0) {
+        const { renderBySource } = await import("./sources.js");
+        process.stdout.write(
+          "\n" +
+            renderBySource(report, { top: args.top, color: args.color, minPct: Math.max(args.minPct, 0.05) }) +
+            "\n",
+        );
       }
 
       if (args.byNamespace && report.threads.length > 0) {

@@ -70,6 +70,13 @@ export interface WindowStat {
   durationMs: number;
 }
 
+// A plugin/mod the platform reported (SamplerMetadata.sources).
+export interface SourceInfo {
+  name: string;
+  version: string;
+  author: string;
+}
+
 export interface Report {
   origin: string;
   platform: PlatformInfo;
@@ -83,6 +90,10 @@ export interface Report {
   samplerMode: string;
   samplerEngine: string;
   threads: Thread[];
+  /** Installed plugins/mods, sorted by name. */
+  sources: SourceInfo[];
+  /** class name -> owning plugin/mod name (spark's ClassSourceLookup). */
+  classSources: Record<string, string>;
 }
 
 let cachedRoot: protobuf.Root | null = null;
@@ -209,6 +220,14 @@ export async function parse(origin: string, bytes: Uint8Array): Promise<Report> 
   // real work; raw total is a misleading rank (tie-broken by total).
   threads.sort((a, b) => b.busy - a.busy || b.total - a.total);
 
+  const sources: SourceInfo[] = Object.entries(meta.sources ?? {})
+    .map(([key, s]: [string, any]) => ({
+      name: s?.name || key,
+      version: s?.version ?? "",
+      author: s?.author ?? "",
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
   return {
     origin,
     platform: {
@@ -235,6 +254,8 @@ export async function parse(origin: string, bytes: Uint8Array): Promise<Report> 
     samplerMode: SAMPLER_MODE[meta.samplerMode ?? 0] ?? "?",
     samplerEngine: SAMPLER_ENGINE[meta.samplerEngine ?? 0] ?? "?",
     threads,
+    sources,
+    classSources: (data.classSources ?? {}) as Record<string, string>,
   };
 }
 

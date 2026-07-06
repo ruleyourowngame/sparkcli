@@ -1,6 +1,6 @@
 import type { Report, Thread } from "./parse.js";
 import { hotSpots, formatPct, shortClass, type Frame } from "./analyze.js";
-import { renderAllThreads, allThreadsJson } from "./busy.js";
+import { renderAllThreads, allThreadsJson, nativeRootedBusy } from "./busy.js";
 
 export interface ReportOptions {
   top: number;
@@ -87,6 +87,9 @@ export function renderText(report: Report, opts: ReportOptions): string {
   const platform = `${report.platform.brand || report.platform.name} ${report.platform.version}`;
   const duration = (report.endTime - report.startTime) / 1000;
   const isAlloc = report.samplerMode === "ALLOCATION";
+  // Background profilers run for the whole uptime but only retain recent
+  // windows — the samples cover the window span, not `duration`.
+  const coverage = report.windows.reduce((s, w) => s + w.durationMs, 0) / 1000;
 
   out.push(paint("─── spark report ───────────────────────────────────────", C.cyan, c));
   out.push(`${paint("platform :", C.dim, c)} ${paint(platform, C.bold, c)}  ${paint("MC", C.dim, c)} ${report.platform.minecraftVersion}`);
@@ -95,7 +98,11 @@ export function renderText(report: Report, opts: ReportOptions): string {
   const intervalStr = isAlloc ? fmtBytes(report.interval) : `${report.interval}μs`;
   out.push(`${paint("sampler  :", C.dim, c)} ${report.samplerEngine}/${report.samplerMode}  interval=${intervalStr}`);
   out.push(`${paint("source   :", C.dim, c)} ${report.origin}`);
-  out.push(`${paint("ticks    :", C.dim, c)} ${report.numberOfTicks}  ${paint("dur", C.dim, c)} ${duration.toFixed(1)}s  ${paint("players", C.dim, c)} ${report.stats.players}`);
+  const coverageNote =
+    coverage > 0 && duration > 0 && coverage < duration * 0.9
+      ? paint(`  (samples cover last ${(coverage / 60).toFixed(0)}m of ${(duration / 3600).toFixed(1)}h run)`, C.yellow, c)
+      : "";
+  out.push(`${paint("ticks    :", C.dim, c)} ${report.numberOfTicks}  ${paint("dur", C.dim, c)} ${duration.toFixed(1)}s  ${paint("players", C.dim, c)} ${report.stats.players}${coverageNote}`);
 
   const tps = report.stats;
   const tpsCol = tps.tps1m >= 19.5 ? C.green : tps.tps1m >= 15 ? C.yellow : C.red;
@@ -135,8 +142,17 @@ export function renderText(report: Report, opts: ReportOptions): string {
     } else {
       const pctAll = (t.busy / busyAll) * 100;
       const pctThr = t.total > 0 ? (t.busy / t.total) * 100 : 0;
+      const nativeBusy = t.busy > 0 ? nativeRootedBusy(t) / t.busy : 0;
+      const warn =
+        nativeBusy > 0.5
+          ? paint(
+              `  ⚠ ${(nativeBusy * 100).toFixed(0)}% native-rooted syscall time — may be blocked, not busy (verify per-thread CPU)`,
+              C.yellow,
+              c,
+            )
+          : "";
       out.push(
-        `  ${pctAll.toFixed(1).padStart(5)}%  ${paint(pctThr.toFixed(0).padStart(3) + "%", C.dim, c)}  ${t.name}`,
+        `  ${pctAll.toFixed(1).padStart(5)}%  ${paint(pctThr.toFixed(0).padStart(3) + "%", C.dim, c)}  ${t.name}${warn}`,
       );
     }
   }
@@ -176,17 +192,26 @@ export function renderText(report: Report, opts: ReportOptions): string {
   const colHead = isAlloc ? "  self%    incl%    self-bytes  frame" : "  self%    incl%    frame";
   const inclColHead = isAlloc ? "  incl%    self%    incl-bytes  frame" : "  incl%    self%    frame";
 
+  const srcOf = (className: string): string | null => {
+    // deferred import avoided: classSources lookup is trivial
+    const direct = report.classSources[className];
+    if (direct) return direct;
+    const dollar = className.indexOf("$");
+    if (dollar > 0) return report.classSources[className.slice(0, dollar)] ?? null;
+    return null;
+  };
+
   out.push("");
   out.push(paint(`Top ${opts.top} ${noun} in "${thread.name}":`, C.bold, c));
   out.push(paint(colHead, C.dim, c));
   const bySelf = [...all].sort((a, b) => b.self - a.self).slice(0, opts.top);
-  for (const f of bySelf) out.push(renderRow(f, total, c, "self", isAlloc));
+  for (const f of bySelf) out.push(renderRow(f, total, c, "self", isAlloc, srcOf(f.className)));
 
   out.push("");
   out.push(paint(`Top ${opts.top} ${isAlloc ? "allocation call paths (inclusive)" : "inclusive hot spots"} in "${thread.name}":`, C.bold, c));
   out.push(paint(inclColHead, C.dim, c));
   const byIncl = [...all].sort((a, b) => b.inclusive - a.inclusive).slice(0, opts.top);
-  for (const f of byIncl) out.push(renderRow(f, total, c, "incl", isAlloc));
+  for (const f of byIncl) out.push(renderRow(f, total, c, "incl", isAlloc, srcOf(f.className)));
 
   return out.join("\n");
 }
@@ -239,6 +264,7 @@ function renderRow(
   color: boolean,
   leading: "self" | "incl",
   showBytes = false,
+  source: string | null = null,
 ): string {
   const selfPct = (f.self / total) * 100;
   const inclPct = (f.inclusive / total) * 100;
@@ -253,7 +279,8 @@ function renderRow(
     ? "  " + paint(fmtBytes(leading === "self" ? f.self : f.inclusive).padStart(9), C.gray, color)
     : "";
   const label = `${shortClass(f.className)}.${f.methodName}${f.lineNumber > 0 ? ":" + f.lineNumber : ""}`;
-  return `  ${paint(aStr, aCol, color)}  ${paint(bStr, C.dim, color)}${bytesStr}  ${label}`;
+  const srcTag = source ? paint(`  [${source}]`, C.cyan, color) : "";
+  return `  ${paint(aStr, aCol, color)}  ${paint(bStr, C.dim, color)}${bytesStr}  ${label}${srcTag}`;
 }
 
 function renderJson(report: Report, opts: ReportOptions): string {
@@ -283,6 +310,9 @@ function renderJson(report: Report, opts: ReportOptions): string {
       windows: report.windows,
       ticks: report.numberOfTicks,
       duration,
+      // background profilers retain only recent windows; samples cover this span
+      windowCoverageSec: report.windows.reduce((s, w) => s + w.durationMs, 0) / 1000,
+      sources: report.sources,
       threads: report.threads.map((t) => ({ name: t.name, total: t.total, busy: t.busy, idle: t.idle })),
       ...(opts.allThreads ? { allThreads: allThreadsJson(report, opts.top) } : {}),
       thread: thread?.name ?? null,
@@ -295,6 +325,7 @@ function renderJson(report: Report, opts: ReportOptions): string {
         inclPct: (f.inclusive / total) * 100,
         self: f.self,
         inclusive: f.inclusive,
+        source: report.classSources[f.className] ?? null,
       })),
     },
     null,
