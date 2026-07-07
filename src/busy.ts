@@ -25,6 +25,9 @@ const IDLE_MATCHERS: Array<{ cls: RegExp; method: RegExp }> = [
   { cls: /^java\.lang\.ref\.Reference$/, method: /^waitForReferencePendingList$/ },
   // console reader blocked on stdin (terminalconsole/jline BufferedReader.readLine)
   { cls: /^sun\.nio\.cs\.StreamDecoder$/, method: /^implRead$/ },
+  // console thread blocked in System.in.read (JDK 22+ System$In wrapper) —
+  // stdin-only anchor; FileInputStream.readBytes itself stays busy (real disk IO)
+  { cls: /^java\.lang\.System\$In$/, method: /^read/ },
   // the JVM launcher thread pthread_joins the real main thread forever
   { cls: /^libjli\.so$/, method: /^CallJavaMainInNewThread$/ },
   // NIO / netty event loops waiting for IO readiness
@@ -33,6 +36,10 @@ const IDLE_MATCHERS: Array<{ cls: RegExp; method: RegExp }> = [
   { cls: /^sun\.nio\.ch\.Net$/, method: /^(poll|accept)$/ },
   { cls: /^io\.netty\.channel\.epoll\./, method: /^epollWait/ },
   { cls: /^io\.netty\.channel\.kqueue\./, method: /^kqueueWait/ },
+  // netty 4.2 io_uring event loop: submit-and-wait blocks in io_uring_enter —
+  // the io_uring equivalent of epollWait (raw `syscall` leaf otherwise reads
+  // as 100% busy)
+  { cls: /^io\.netty\.channel\.uring\./, method: /^submitAndWait/ },
   // HotSpot native park / VM idle loops
   {
     cls: /^libjvm\.so$/,
