@@ -64,10 +64,13 @@ function fmtUptime(ms: number): string {
 
 export function pickThread(report: Report, query?: string): Thread {
   if (!query) {
-    return (
-      report.threads.find((t) => /^Server thread$/i.test(t.name)) ??
-      report.threads[0]!
-    );
+    // Prefer the busiest "Server thread*" — on executor-ticked forks the tick
+    // runs on "Server Thread - ES" while the original "Server thread" is a
+    // parked launcher thread that exact-matches first.
+    const serverThreads = report.threads
+      .filter((t) => /^server thread/i.test(t.name))
+      .sort((a, b) => b.busy - a.busy || b.total - a.total);
+    return serverThreads[0] ?? report.threads[0]!;
   }
   const exact = report.threads.find((t) => t.name === query);
   if (exact) return exact;
