@@ -18,6 +18,14 @@ export interface StackNode {
 
 export interface Thread {
   name: string;
+  /**
+   * Execution context these samples were taken in, from our spark fork - on Grid/Folia the
+   * region that was ticking (`region/<world>/<id>`, or `global-tick`). Absent on reports from
+   * an unmodified spark, and on threads that are their own unit of work.
+   */
+  context?: string;
+  /** Underlying thread, when this node maps to exactly one. See {@link context}. */
+  threadName?: string;
   times: number[];
   childrenRefs: number[];
   nodes: StackNode[];
@@ -70,6 +78,20 @@ export interface WindowStat {
   durationMs: number;
 }
 
+/**
+ * How reliably samples could be attributed to an execution context.
+ *
+ * Attribution is racy by construction (the stack and the region are not read at the same
+ * instant), so the server counts what it could not place instead of hiding it. `ambiguous` is
+ * the real error bar; `unattributed` is mostly threads that were parked with no region at all,
+ * which is information rather than error.
+ */
+export interface ContextAccuracy {
+  total: number;
+  ambiguous: number;
+  unattributed: number;
+}
+
 // A plugin/mod the platform reported (SamplerMetadata.sources).
 export interface SourceInfo {
   name: string;
@@ -94,6 +116,8 @@ export interface Report {
   sources: SourceInfo[];
   /** class name -> owning plugin/mod name (spark's ClassSourceLookup). */
   classSources: Record<string, string>;
+  /** Present only on reports from our spark fork with context-aware grouping enabled. */
+  contextAccuracy?: ContextAccuracy;
 }
 
 let cachedRoot: protobuf.Root | null = null;
@@ -203,6 +227,8 @@ export async function parse(origin: string, bytes: Uint8Array): Promise<Report> 
     const times = (t.times ?? []) as number[];
     const thread: Thread = {
       name: t.name ?? "",
+      context: t.context || undefined,
+      threadName: t.threadName || undefined,
       times,
       childrenRefs: (t.childrenRefs ?? []) as number[],
       nodes,
@@ -256,6 +282,13 @@ export async function parse(origin: string, bytes: Uint8Array): Promise<Report> 
     threads,
     sources,
     classSources: (data.classSources ?? {}) as Record<string, string>,
+    contextAccuracy: meta.contextAccuracy
+      ? {
+          total: num(meta.contextAccuracy.totalSamples),
+          ambiguous: num(meta.contextAccuracy.ambiguousSamples),
+          unattributed: num(meta.contextAccuracy.unattributedSamples),
+        }
+      : undefined,
   };
 }
 

@@ -439,6 +439,9 @@ interface ParsedArgs {
   heap?: boolean;
   hprof?: boolean;
   retainers?: string;
+  regions?: boolean;
+  byThread?: boolean;
+  region?: string;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -482,6 +485,19 @@ function parseArgs(argv: string[]): ParsedArgs {
       case "--all-threads":
       case "--threads":
         args.allThreads = true;
+        args.tui = false;
+        break;
+      case "--regions":
+        args.regions = true;
+        args.tui = false;
+        break;
+      case "--by-thread":
+      case "--region-threads":
+        args.byThread = true;
+        args.tui = false;
+        break;
+      case "--region":
+        args.region = argv[++i];
         args.tui = false;
         break;
       case "--focus":
@@ -548,6 +564,15 @@ function printUsage() {
       "                   frames, plus a cross-thread busy-frame rollup. Park/wait/epoll",
       "                   idle sinks are excluded — a pool of 50 sleeping workers stops",
       "                   outranking the one thread doing real work. Alias: --threads",
+      "  --regions        rank REGIONS by busy time (Grid/Folia reports from a spark build",
+      "                   with context-aware grouping). One region tick thread ticks many",
+      "                   regions, so the plain thread view is an average across all of",
+      "                   them; this splits it back apart.",
+      "  --by-thread      the same samples rolled up per region tick thread, with how many",
+      "                   regions each thread serviced. Alias: --region-threads",
+      "  --region ID      drill into one region: its merged call tree across every thread",
+      "                   that ticked it. Accepts a bare id, region/<world>/<id>, 'global',",
+      "                   or a label substring. Combines with --tree / --focus / --top.",
       "  --tree           batch top-down call tree of the target thread (see --depth)",
       "  --focus SUBSTR   drill into every frame matching SUBSTR in the target thread:",
       "                   caller chains to it + the merged tree below it",
@@ -574,6 +599,9 @@ function printUsage() {
       "  sparkcli ./heap.bin --heap --json | jq '.topClasses[0]'",
       "  sparkcli ./dump.hprof --top 30                      # JVM heap dump class histogram",
       "  sparkcli ./dump.hprof --retainers 'char[]'          # who is holding the char[]",
+      "  sparkcli ./profile.sparkprofile --regions           # which region is eating the server",
+      "  sparkcli ./profile.sparkprofile --by-thread         # is the pool balanced?",
+      "  sparkcli ./profile.sparkprofile --region 42 --tree  # call tree of one region",
     ].join("\n"),
   );
 }
@@ -635,16 +663,54 @@ if (args.flagsRepo && !args.input) {
       const { renderText, pickThread } = await import("./report.js");
       const report = await parse(src.origin, src.bytes);
 
-      // --focus / --tree: standalone drill-down sections, no full report body.
-      if (args.focus || args.tree) {
-        const { renderFocus, renderTree } = await import("./focus.js");
-        const thread = pickThread(report, args.thread);
+      // --regions / --by-thread: region rollups, standalone sections.
+      if (args.regions || args.byThread) {
+        const { renderRegions, renderByThread } = await import("./regions.js");
         const sections: string[] = [];
+        if (args.regions) sections.push(renderRegions(report, { top: args.top, color: args.color }));
+        if (args.byThread) sections.push(renderByThread(report, { top: args.top, color: args.color }));
+        process.stdout.write(sections.join("\n\n") + "\n");
+        return;
+      }
+
+      // --focus / --tree: standalone drill-down sections, no full report body.
+      if (args.focus || args.tree || args.region) {
+        const { renderFocus, renderTree } = await import("./focus.js");
+        const { pickRegion, mergeThreads } = await import("./regions.js");
+
+        let thread;
+        if (args.region) {
+          // one region's work is spread over however many threads ticked it, so merge those
+          // trees back together before drilling in
+          const group = pickRegion(report, args.region);
+          if (!group) {
+            console.error(
+              `no region matching "${args.region}" in this report — try --regions to list them`,
+            );
+            process.exitCode = 1;
+            return;
+          }
+          thread = mergeThreads(group.members, group.label);
+        } else {
+          thread = pickThread(report, args.thread);
+        }
+
+        // --region on its own is a hot-spot view of that region, not a bare tree
+        if (args.region && !args.tree && !args.focus) {
+          const { renderRegionDetail } = await import("./regions.js");
+          const group = pickRegion(report, args.region)!;
+          process.stdout.write(
+            renderRegionDetail(group, { top: args.top, color: args.color }) + "\n",
+          );
+          return;
+        }
+
+        const drill: string[] = [];
         if (args.tree) {
-          sections.push(renderTree(thread, { color: args.color, minPct: Math.max(args.minPct, 0.2), depth: args.depth }));
+          drill.push(renderTree(thread, { color: args.color, minPct: Math.max(args.minPct, 0.2), depth: args.depth }));
         }
         if (args.focus) {
-          sections.push(
+          drill.push(
             renderFocus(thread, args.focus, {
               color: args.color,
               minPct: Math.max(args.minPct, 0.1),
@@ -653,7 +719,7 @@ if (args.flagsRepo && !args.input) {
             }),
           );
         }
-        process.stdout.write(sections.join("\n\n") + "\n");
+        process.stdout.write(drill.join("\n\n") + "\n");
         return;
       }
 
