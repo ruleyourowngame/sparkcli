@@ -204,6 +204,12 @@ function shareColor(share: number): string {
   return share >= 0.4 ? C.red : share >= 0.15 ? C.yellow : C.green;
 }
 
+/** `--- heading ------`, with no trailing space when the heading is too long to pad. */
+function rule(heading: string, width = 58): string {
+  const prefix = `--- ${heading}`;
+  return prefix.length + 2 > width ? prefix : `${prefix} `.padEnd(width, "-");
+}
+
 export interface RenderOptions {
   top: number;
   color: boolean;
@@ -249,7 +255,7 @@ function renderGroups(
 ): string {
   const c = opts.color;
   const out: string[] = [];
-  out.push(paint(`--- ${heading} `.padEnd(58, "-"), C.cyan, c));
+  out.push(paint(rule(heading), C.cyan, c));
 
   if (groups.length === 0) {
     out.push(
@@ -324,7 +330,7 @@ export function renderRegionDetail(group: Group, opts: RenderOptions): string {
   const merged = mergeThreads(group.members, group.label);
   const out: string[] = [];
 
-  out.push(paint(`--- ${group.label} `.padEnd(58, "-"), C.cyan, c));
+  out.push(paint(rule(group.label), C.cyan, c));
   out.push(
     paint(
       `sampled ${(merged.total / 1000).toFixed(1)}s total, ${(merged.busy / 1000).toFixed(1)}s busy` +
