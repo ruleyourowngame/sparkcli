@@ -30,6 +30,42 @@ Top 10 self-time hot spots in "Server thread":
 
 > *(short code, platform name, and counts above are illustrative — every spark report renders the same shape with your own data.)*
 
+## Regionised servers (Grid / Folia)
+
+On a regionised server a thread is not a unit of work: one region tick thread ticks many regions
+over the course of a profile. Stock spark groups samples by thread pool, which merges the whole
+region pool into a single node - one average across every region, with no way to see which region
+was slow and no per-thread split either.
+
+[Our spark fork](https://github.com/ruleyourowngame/spark) tags every node with the region it was
+sampled in and the thread it ran on, at the finest granularity, so one profile can be read three
+ways:
+
+```bash
+sparkcli ./profile.sparkprofile --regions            # which region is eating the server
+sparkcli ./profile.sparkprofile --by-thread          # is the pool balanced, or is one thread flat?
+sparkcli ./profile.sparkprofile --region 42          # one region's hot spots, merged across threads
+sparkcli ./profile.sparkprofile --region 42 --tree   # ... as a call tree
+```
+
+```
+--- regions (3), ranked by busy time ---------------------
+attribution : 602 of 39,976 samples placed in a region  (39,372 had no region - idle or
+              non-tick work, 2 ambiguous)
+
+  busy%      busy /   total
+   62.2%      1.4s /    1.5s   Region #1 (world @ -208,128 - 400 chunks, 94 entities)
+   36.6%      0.8s /    0.9s   Region #2 (world @ 5792,6128 - 400 chunks, 28 entities)
+    1.2%      0.0s /    0.1s   Global tick
+```
+
+Attribution is statistical, not exact - the stack trace and the region are not read at the same
+instant - so the server counts the samples it could not place confidently and `--regions` prints
+that count. Treat the ambiguous figure as the error bar on the split.
+
+Reports from an unmodified spark have no region data; these flags then say so and the normal
+thread views still work.
+
 ## Install
 
 Requires Node ≥ 18 (and `npm`, which ships with it).

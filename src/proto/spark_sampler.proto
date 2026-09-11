@@ -36,6 +36,10 @@ message SamplerMetadata {
   SamplerMode sampler_mode = 15;
   SamplerEngine sampler_engine = 16;
   string sampler_engine_version = 17;
+  Metrics metrics = 18;
+
+  // fork-local fields live at 900+ so upstream can keep claiming low numbers
+  ContextAccuracy context_accuracy = 900; // optional
 
   message ThreadDumper {
     Type type = 1;
@@ -47,6 +51,13 @@ message SamplerMetadata {
       SPECIFIC = 1;
       REGEX = 2;
     }
+  }
+
+  // reports how reliably samples could be attributed to an execution context
+  message ContextAccuracy {
+    int64 total_samples = 1;
+    int64 ambiguous_samples = 2; // context changed while the sample was being taken
+    int64 unattributed_samples = 3; // thread had no context at sample time
   }
 
   message DataAggregator {
@@ -64,6 +75,8 @@ message SamplerMetadata {
       BY_NAME = 0;
       BY_POOL = 1;
       AS_ONE = 2;
+      BY_CONTEXT = 900;
+      BY_CONTEXT_AND_NAME = 901;
     }
   }
 
@@ -88,6 +101,11 @@ message ThreadNode {
   repeated StackTraceNode children = 3;
   repeated double times = 4;
   repeated int32 children_refs = 5;
+
+  // the logical unit of work this node's samples were taken in (e.g. a region), if known
+  string context = 900; // optional
+  // the thread this node's samples were taken on, if the node maps to a single thread
+  string thread_name = 901; // optional
 }
 
 message StackTraceNode {
@@ -102,9 +120,4 @@ message StackTraceNode {
   string method_desc = 7; // optional
   repeated double times = 8;
   repeated int32 children_refs = 9;
-}
-
-message SocketChannelInfo {
-  string channel_id = 1;
-  bytes public_key = 2;
 }
