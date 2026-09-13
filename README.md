@@ -10,6 +10,8 @@ $ sparkcli https://spark.lucko.me/AbCdEfGhIj --no-tui --top 10
 ─── spark report ───────────────────────────────────────
 platform : Paper 1.21-DEV-abc1234  MC 1.21
 sampler  : ASYNC/EXECUTION  interval=4000μs
+source   : https://spark-usercontent.lucko.me/AbCdEfGhIj
+time     : 2026-09-13T04:09:14.187Z → 2026-09-13T04:19:14.187Z
 ticks    : 12000  dur 600.0s  players 50
 TPS      : 20.00 / 20.00 / 20.00   MSPT med 12.4 p95 28.1 max 110.0
 CPU      : process 87.8% / 70.3%   system 72.4% / 72.7%   (1m/15m)  cores 2
@@ -175,6 +177,7 @@ sparkcli --flags ~/code/Paper
 - **Fetches** from `spark-usercontent.lucko.me` with the right `Accept: application/x-spark-sampler` header. Spark's response is gzip; Node's built-in `fetch` decodes it.
 - **Decodes** the protobuf payload (`SamplerData`) using the [official spark `.proto`](https://github.com/lucko/spark/tree/master/spark-common/src/main/proto/spark) loaded at runtime via [protobufjs](https://github.com/protobufjs/protobuf.js).
 - **Walks the flattened tree** — spark serializes each thread's call tree post-order DFS into a single `children[]` array; `children_refs[]` are indices into that array. sparkcli rebuilds the tree, computes per-frame self / inclusive time, and ranks.
+- **Flags `--only-ticks-over` profiles.** When spark's aggregator is `TICKED` with a threshold, only the slow ticks were sampled, so every percentage in the report is a share of those ticks — not of the average tick. The header adds `filter   : only ticks over 25 ms — 915 of 67731 ticks kept  (1.4%)` and `--json` carries `tickFilter: {thresholdMs, includedTicks, totalTicks}` (`null` for plain profiles). `--json` also exposes `startTime`/`endTime` as ISO-8601 strings.
 - **Surfaces CPU & system stats** — process/system CPU usage (1m/15m), core count (cgroup-capped, so a 2-core cap on a 16-core host is visible), CPU model, memory, uptime, plus the per-window CPU·TPS·MSPT time series from `time_window_statistics`. A report with **zero thread samples** (a statistics-only snapshot) no longer errors — it just shows the CPU/system block.
 - **Audit mode** walks the top-N inclusive frames and locates each one's source file inside a checked-out repo (looks under `paper-server`, `aspaper-server`, `core`, `plugin` source roots). Useful for "what file do I need to read to optimize this hot spot?"
 

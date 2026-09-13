@@ -33,6 +33,17 @@ function pct(frac: number): string {
   return `${(frac * 100).toFixed(1)}%`;
 }
 
+// epoch millis -> ISO-8601, or null when the metadata didn't carry a time.
+function iso(ms: number): string | null {
+  return ms > 0 ? new Date(ms).toISOString() : null;
+}
+
+// "only ticks over 25 ms — 915 of 67731 ticks kept (1.4%)"
+function tickFilterLabel(f: NonNullable<Report["tickFilter"]>): string {
+  const share = f.totalTicks > 0 ? `  (${pct(f.includedTicks / f.totalTicks)})` : "";
+  return `only ticks over ${f.thresholdMs} ms — ${f.includedTicks} of ${f.totalTicks} ticks kept${share}`;
+}
+
 // Colour a CPU usage fraction. High isn't necessarily bad (it can be a small
 // core cap), but it's the thing worth eyeballing, so flag it.
 function cpuColor(frac: number): string {
@@ -101,11 +112,15 @@ export function renderText(report: Report, opts: ReportOptions): string {
   const intervalStr = isAlloc ? fmtBytes(report.interval) : `${report.interval}μs`;
   out.push(`${paint("sampler  :", C.dim, c)} ${report.samplerEngine}/${report.samplerMode}  interval=${intervalStr}`);
   out.push(`${paint("source   :", C.dim, c)} ${report.origin}`);
+  if (iso(report.startTime)) out.push(`${paint("time     :", C.dim, c)} ${iso(report.startTime)} → ${iso(report.endTime)}`);
   const coverageNote =
     coverage > 0 && duration > 0 && coverage < duration * 0.9
       ? paint(`  (samples cover last ${(coverage / 60).toFixed(0)}m of ${(duration / 3600).toFixed(1)}h run)`, C.yellow, c)
       : "";
   out.push(`${paint("ticks    :", C.dim, c)} ${report.numberOfTicks}  ${paint("dur", C.dim, c)} ${duration.toFixed(1)}s  ${paint("players", C.dim, c)} ${report.stats.players}${coverageNote}`);
+  // --only-ticks-over profiles sample only the slow ticks: every percentage
+  // below is a share of those, not of the average tick. Say so up front.
+  if (report.tickFilter) out.push(`${paint("filter   :", C.dim, c)} ${paint(tickFilterLabel(report.tickFilter), C.yellow, c)}`);
 
   const tps = report.stats;
   const tpsCol = tps.tps1m >= 19.5 ? C.green : tps.tps1m >= 15 ? C.yellow : C.red;
@@ -305,6 +320,11 @@ function renderJson(report: Report, opts: ReportOptions): string {
       metricUnit: isAlloc ? "bytes" : "samples",
       interval: report.interval,
       intervalUnit: isAlloc ? "bytes" : "microseconds",
+      startTime: iso(report.startTime),
+      endTime: iso(report.endTime),
+      // non-null only for --only-ticks-over profiles: samples cover just the
+      // `includedTicks` slow ticks, so every pct below is a share of those
+      tickFilter: report.tickFilter ?? null,
       ...(isAlloc
         ? { totalAllocated: totalAll, allocBytesPerSec: duration > 0 ? totalAll / duration : 0 }
         : {}),
