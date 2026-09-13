@@ -92,6 +92,19 @@ export interface ContextAccuracy {
   unattributed: number;
 }
 
+// Present when the profile was recorded with `--only-ticks-over N`
+// (SamplerMetadata.data_aggregator.type == TICKED with a threshold). Only the
+// ticks slower than the threshold were sampled, so every percentage in the
+// report is a share of those slow ticks — not of the average tick.
+export interface TickFilter {
+  /** Threshold in milliseconds (proto carries microseconds). */
+  thresholdMs: number;
+  /** Ticks that exceeded the threshold and were kept. */
+  includedTicks: number;
+  /** All ticks observed during the profile (SamplerMetadata.number_of_ticks). */
+  totalTicks: number;
+}
+
 // A plugin/mod the platform reported (SamplerMetadata.sources).
 export interface SourceInfo {
   name: string;
@@ -111,6 +124,8 @@ export interface Report {
   interval: number;
   samplerMode: string;
   samplerEngine: string;
+  /** Set only for `--only-ticks-over` profiles; undefined for plain ones. */
+  tickFilter?: TickFilter;
   threads: Thread[];
   /** Installed plugins/mods, sorted by name. */
   sources: SourceInfo[];
@@ -143,6 +158,7 @@ async function loadProto(): Promise<protobuf.Root> {
 
 const SAMPLER_MODE = ["EXECUTION", "ALLOCATION"];
 const SAMPLER_ENGINE = ["JAVA", "ASYNC"];
+const AGGREGATOR_TICKED = 1; // DataAggregator.Type.TICKED
 
 function num(v: unknown): number {
   if (typeof v === "number") return v;
@@ -279,6 +295,14 @@ export async function parse(origin: string, bytes: Uint8Array): Promise<Report> 
     interval: meta.interval ?? 0,
     samplerMode: SAMPLER_MODE[meta.samplerMode ?? 0] ?? "?",
     samplerEngine: SAMPLER_ENGINE[meta.samplerEngine ?? 0] ?? "?",
+    tickFilter:
+      meta.dataAggregator?.type === AGGREGATOR_TICKED && num(meta.dataAggregator.tickLengthThreshold) > 0
+        ? {
+            thresholdMs: num(meta.dataAggregator.tickLengthThreshold) / 1000,
+            includedTicks: meta.dataAggregator.numberOfIncludedTicks ?? 0,
+            totalTicks: meta.numberOfTicks ?? 0,
+          }
+        : undefined,
     threads,
     sources,
     classSources: (data.classSources ?? {}) as Record<string, string>,

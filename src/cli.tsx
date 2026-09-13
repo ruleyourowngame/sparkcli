@@ -45,7 +45,7 @@ function cpuTone(frac: number): "green" | "yellow" | "red" {
 }
 
 function Header({ report }: { report: Report }) {
-  const { platform, stats, system, numberOfTicks, samplerMode, samplerEngine, threads } = report;
+  const { platform, stats, system, numberOfTicks, samplerMode, samplerEngine, threads, tickFilter } = report;
   const duration = (report.endTime - report.startTime) / 1000;
   const hasCpu = system.cpuThreads > 0 || system.cpuProcess1m > 0 || system.cpuSystem1m > 0;
   return (
@@ -72,6 +72,11 @@ function Header({ report }: { report: Report }) {
         </Text>
         <Text dimColor>  ·  </Text>
         <Text>{stats.players} players · {numberOfTicks} ticks · {duration.toFixed(1)}s</Text>
+        {tickFilter && (
+          <Text color="yellow">
+            {" "}· only ticks over {tickFilter.thresholdMs} ms ({tickFilter.includedTicks} kept)
+          </Text>
+        )}
       </Box>
       {hasCpu && (
         <Box>
