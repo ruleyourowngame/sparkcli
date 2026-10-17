@@ -23,6 +23,9 @@ const IDLE_MATCHERS: Array<{ cls: RegExp; method: RegExp }> = [
   { cls: /^java\.lang\.Object$/, method: /^wait0?$/ },
   { cls: /^java\.lang\.Thread$/, method: /^(sleep|sleep0|sleepNanos|yield|yield0|onSpinWait)$/ },
   { cls: /^java\.lang\.ref\.Reference$/, method: /^waitForReferencePendingList$/ },
+  // JDK 21+ "VirtualThread-unblocker": blocks in native code until timed-unpark /
+  // monitor handoffs arrive — a pure wait, never real work (read 100% busy otherwise)
+  { cls: /^java\.lang\.VirtualThread$/, method: /^takeVirtualThreadListToUnblock$/ },
   // console reader blocked on stdin (terminalconsole/jline BufferedReader.readLine)
   { cls: /^sun\.nio\.cs\.StreamDecoder$/, method: /^implRead$/ },
   // console thread blocked in System.in.read (JDK 22+ System$In wrapper) —
@@ -275,7 +278,15 @@ export function renderAllThreads(
     out.push(paint("all busy time across every thread; busy/thr of that thread's own samples.", C.dim, c));
   }
   out.push("");
-  out.push(paint(`${"busy%all".padStart(9)}  ${"busy/thr".padStart(8)}  thread`, C.dim, c));
+  out.push(
+    paint(
+      isAlloc
+        ? `${"alloc%all".padStart(9)}  ${"".padStart(8)}  thread`
+        : `${"busy%all".padStart(9)}  ${"busy/thr".padStart(8)}  thread`,
+      C.dim,
+      c,
+    ),
+  );
 
   let shown = 0;
   const byName = new Map(report.threads.map((t) => [t.name, t]));

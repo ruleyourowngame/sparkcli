@@ -200,7 +200,14 @@ export function renderBySource(
   const { buckets, busyAll } = aggregateBySource(report);
   const denom = busyAll || 1;
   const out: string[] = [];
-  out.push(paint("─── busy self-time by source (all threads) ────────────", C.cyan, c));
+  const isAlloc = report.samplerMode === "ALLOCATION";
+  out.push(
+    paint(
+      `─── ${isAlloc ? "allocated bytes" : "busy self-time"} by source (all threads) ────────────`,
+      C.cyan,
+      c,
+    ),
+  );
   out.push(
     paint(
       "plugin attribution via spark class_sources (sticky through NMS/native callees);",
@@ -210,7 +217,7 @@ export function renderBySource(
   );
   out.push(paint("non-plugin frames bucket by package or native library.", C.dim, c));
   out.push("");
-  out.push(paint(`${"busy%".padStart(8)}  source  ·  hottest frame  ·  hottest thread`, C.dim, c));
+  out.push(paint(`${(isAlloc ? "alloc%" : "busy%").padStart(8)}  source  ·  hottest frame  ·  hottest thread`, C.dim, c));
   let shown = 0;
   for (const b of buckets) {
     const pct = (b.busySelf / denom) * 100;

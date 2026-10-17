@@ -126,6 +126,10 @@ sparkcli <spark-url | code | file> [flags]
 | `--all-threads` | rank ALL threads by busy (non-idle) time + cross-thread busy-frame rollup. Park/wait/epoll idle sinks are excluded, so 50 sleeping pool workers stop outranking the one thread doing real work. Alias: `--threads` |
 | `--tree` | batch top-down call tree of the target thread |
 | `--focus SUBSTR` | drill into frames matching SUBSTR: caller chains to them + the merged tree below them |
+| `--callers SUBSTR` | inverted (bottom-up) caller tree of every frame matching SUBSTR, merged by caller — "who is responsible for this leaf" (an allocation site, a codec, a lock) |
+| `--collapse REGEX` | with `--callers`: skip caller frames whose `class.method` matches, so recursive plumbing (DFU codecs, netty pipeline hops) folds away |
+| `--merge` | with `--thread NAME`: merge every thread whose name contains NAME into one tree, so a whole pool (`--thread "Netty Epoll" --merge`) reads as one unit for hot spots / `--focus` / `--tree` / `--callers` |
+| `--health` | force health-report mode (auto-detected for `x-spark-health` uploads and for local files that aren't sampler reports) |
 | `--depth N` | max depth for `--tree` / `--focus` subtree (default 8) |
 | `--audit PATH` | map top frames to source files inside a repo |
 | `--min-pct N` | audit/tree/focus/all-threads: hide rows below N% (default 0.1) |
@@ -146,6 +150,17 @@ sparkcli ./report.bin --json | jq '.frames[] | select(.selfPct > 1.0)'
 
 # Which threads actually burn CPU (idle park time excluded)?
 sparkcli AbCdEfGhIj --all-threads --top 30
+
+# Health report (`/spark health --upload`): TPS/MSPT, heap pools, allocation rate,
+# GC duty cycle, network per player, ~1h history sparklines, entity hot spots
+sparkcli https://spark.lucko.me/HeAlThCoDe
+
+# Who is responsible for all that codec allocation? (allocation profile, bottom-up)
+sparkcli AbCdEfGhIj --thread All --callers com.mojang.serialization \
+  --collapse '^(com\.mojang\.(serialization|datafixers)|java\.)' --depth 6 --min-pct 0.3
+
+# A whole netty pool as one thread
+sparkcli AbCdEfGhIj --thread "Netty Epoll" --merge --top 30
 
 # Who calls this hot method, and what runs beneath it?
 sparkcli AbCdEfGhIj --thread "Netty Epoll" --focus "Connection\$2.write" --depth 20
@@ -179,6 +194,7 @@ sparkcli --flags ~/code/Paper
 - **Walks the flattened tree** — spark serializes each thread's call tree post-order DFS into a single `children[]` array; `children_refs[]` are indices into that array. sparkcli rebuilds the tree, computes per-frame self / inclusive time, and ranks.
 - **Flags `--only-ticks-over` profiles.** When spark's aggregator is `TICKED` with a threshold, only the slow ticks were sampled, so every percentage in the report is a share of those ticks — not of the average tick. The header adds `filter   : only ticks over 25 ms — 915 of 67731 ticks kept  (1.4%)` and `--json` carries `tickFilter: {thresholdMs, includedTicks, totalTicks}` (`null` for plain profiles). `--json` also exposes `startTime`/`endTime` as ISO-8601 strings.
 - **Surfaces CPU & system stats** — process/system CPU usage (1m/15m), core count (cgroup-capped, so a 2-core cap on a 16-core host is visible), CPU model, memory, uptime, plus the per-window CPU·TPS·MSPT time series from `time_window_statistics`. A report with **zero thread samples** (a statistics-only snapshot) no longer errors — it just shows the CPU/system block.
+- **Health reports** (`x-spark-health`) render as one screen: TPS / MSPT / ping, CPU, heap and per-pool usage (with after-GC size), allocation rate (also per player), GC totals with a *duty cycle* (avg cycle time ÷ interval — for ZGC/Shenandoah the share of wall time the concurrent collector is running), network rates per player, the per-window table, sparklines of the ~1h metrics history, and the entity census rolled up per world (regionised servers report one entry per tick region) plus the densest chunks.
 - **Audit mode** walks the top-N inclusive frames and locates each one's source file inside a checked-out repo (looks under `paper-server`, `aspaper-server`, `core`, `plugin` source roots). Useful for "what file do I need to read to optimize this hot spot?"
 
 ## Why not just use spark's web viewer?
@@ -192,7 +208,6 @@ The web viewer is great for one report. sparkcli is for:
 
 ## Limitations
 
-- **Heap dumps and health reports** aren't parsed yet — only sampler reports (the common case). Adding them is a few lines of protobuf decoding; PRs welcome.
 - **Method-level dedup can over-count** native frames that recur across many call paths. For Java frames this is rare; for `libc.so.6.*pthread*` style symbols the inclusive sum can show > 100%. The fix is to dedup by stack identity instead of method, which sparkcli doesn't do yet.
 - **No live/streaming** mode — sparkcli reads a finalized report, not a live profile.
 
@@ -213,6 +228,7 @@ src/
 ├── parse.ts       # protobuf bytes → typed Report
 ├── analyze.ts     # tree walking, self / inclusive aggregation
 ├── report.ts      # batch text + JSON renderer
+├── health.ts      # health report (x-spark-health) parser + renderer
 ├── audit.ts       # frame → source-file locator
 ├── flags.ts       # repo scanner for -Dasp.* toggles
 └── proto/         # spark's .proto files (copied from upstream)

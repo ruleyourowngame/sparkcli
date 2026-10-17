@@ -442,11 +442,15 @@ interface ParsedArgs {
   tree?: boolean;
   depth: number;
   heap?: boolean;
+  health?: boolean;
   hprof?: boolean;
   retainers?: string;
   regions?: boolean;
   byThread?: boolean;
   region?: string;
+  merge?: boolean;
+  callers?: string;
+  collapse?: string;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -520,6 +524,21 @@ function parseArgs(argv: string[]): ParsedArgs {
         args.heap = true;
         args.tui = false;
         break;
+      case "--callers":
+        args.callers = argv[++i];
+        args.tui = false;
+        break;
+      case "--collapse":
+        args.collapse = argv[++i];
+        break;
+      case "--merge":
+        args.merge = true;
+        args.tui = false;
+        break;
+      case "--health":
+        args.health = true;
+        args.tui = false;
+        break;
       case "--hprof":
         args.hprof = true;
         args.tui = false;
@@ -561,10 +580,18 @@ function printUsage() {
       "  --no-tui         force batch text output",
       "  --json           batch JSON output (implies --no-tui)",
       "  --heap           force heap-summary mode (auto-detected for x-spark-heap URLs)",
+      "  --health         force health-report mode (auto-detected for x-spark-health URLs",
+      "                   and for local files that are not sampler reports)",
       "  --hprof          force JVM heap-dump mode for a local .hprof (auto-detected by magic)",
       "  --retainers CLS  .hprof: show which classes reference instances of CLS (e.g. 'char[]')",
       "  --top N          rows per hot-spot / heap-class / retainer section (default 25)",
       "  --thread NAME    target thread (substring match; default: Server thread)",
+      "  --callers SUBSTR inverted caller tree of every frame matching SUBSTR: who is",
+      "                   responsible for it, merged by caller (see --depth / --min-pct)",
+      "  --collapse REGEX with --callers: skip caller frames whose class.method matches",
+      "                   (e.g. 'com\\.mojang\\.serialization|io\\.netty' to fold plumbing)",
+      "  --merge          with --thread: merge EVERY thread whose name contains NAME into one",
+      "                   tree (e.g. a whole pool: --thread 'Netty Epoll' --merge --focus X)",
       "  --all-threads    rank ALL threads by busy (non-idle) time with their top busy",
       "                   frames, plus a cross-thread busy-frame rollup. Park/wait/epoll",
       "                   idle sinks are excluded — a pool of 50 sleeping workers stops",
@@ -660,13 +687,63 @@ if (args.flagsRepo && !args.input) {
         return;
       }
 
+      // Health reports (`/spark health --upload`): statistics only, no samples — batch even
+      // under a TTY. Auto-detected from the stored content-type or forced with --health.
+      const renderHealthReport = async () => {
+        const { parseHealth, renderHealth } = await import("./health.js");
+        const health = await parseHealth(src.origin, src.bytes);
+        process.stdout.write(renderHealth(health, { top: args.top, color: args.color, json: args.json }) + "\n");
+      };
+      if (args.health || src.contentType.includes("x-spark-health")) {
+        await renderHealthReport();
+        return;
+      }
+
+      // Local files carry no content-type: a health payload fails to decode as SamplerData,
+      // so fall back to it before reporting the error.
+      let parsed: Awaited<ReturnType<typeof parse>> | undefined;
+      if (!src.contentType) {
+        try {
+          parsed = await parse(src.origin, src.bytes);
+        } catch (err) {
+          try {
+            await renderHealthReport();
+            return;
+          } catch {
+            throw err;
+          }
+        }
+      }
+
       if (args.tui) {
         render(<App source={src} />);
         return;
       }
 
       const { renderText, pickThread } = await import("./report.js");
-      const report = await parse(src.origin, src.bytes);
+      const report = parsed ?? (await parse(src.origin, src.bytes));
+
+      // --merge: fold every thread matching --thread into one synthetic thread, so pool-wide
+      // hot spots / --focus / --tree read the whole pool instead of its first member.
+      if (args.merge) {
+        if (!args.thread) {
+          console.error("--merge needs --thread NAME (the substring to merge on)");
+          process.exitCode = 2;
+          return;
+        }
+        const { mergeThreads } = await import("./regions.js");
+        const q = args.thread.toLowerCase();
+        const members = report.threads.filter((t) => t.name.toLowerCase().includes(q));
+        if (members.length === 0) {
+          console.error(`no thread matched ${JSON.stringify(args.thread)}`);
+          process.exitCode = 1;
+          return;
+        }
+        const name = `${args.thread} (merged ${members.length} threads)`;
+        // replace the members, so thread rankings don't count their samples twice
+        report.threads = [mergeThreads(members, name), ...report.threads.filter((t) => !members.includes(t))];
+        args.thread = name;
+      }
 
       // --regions / --by-thread: region rollups, standalone sections.
       if (args.regions || args.byThread) {
@@ -679,8 +756,8 @@ if (args.flagsRepo && !args.input) {
       }
 
       // --focus / --tree: standalone drill-down sections, no full report body.
-      if (args.focus || args.tree || args.region) {
-        const { renderFocus, renderTree } = await import("./focus.js");
+      if (args.focus || args.tree || args.region || args.callers) {
+        const { renderFocus, renderTree, renderCallers } = await import("./focus.js");
         const { pickRegion, mergeThreads } = await import("./regions.js");
 
         let thread;
@@ -701,7 +778,7 @@ if (args.flagsRepo && !args.input) {
         }
 
         // --region on its own is a hot-spot view of that region, not a bare tree
-        if (args.region && !args.tree && !args.focus) {
+        if (args.region && !args.tree && !args.focus && !args.callers) {
           const { renderRegionDetail } = await import("./regions.js");
           const group = pickRegion(report, args.region)!;
           process.stdout.write(
@@ -713,6 +790,24 @@ if (args.flagsRepo && !args.input) {
         const drill: string[] = [];
         if (args.tree) {
           drill.push(renderTree(thread, { color: args.color, minPct: Math.max(args.minPct, 0.2), depth: args.depth }));
+        }
+        if (args.callers) {
+          let collapse: RegExp | undefined;
+          try {
+            collapse = args.collapse ? new RegExp(args.collapse) : undefined;
+          } catch (err) {
+            console.error(`invalid --collapse regex: ${(err as Error).message}`);
+            process.exitCode = 2;
+            return;
+          }
+          drill.push(
+            renderCallers(thread, args.callers, {
+              color: args.color,
+              minPct: Math.max(args.minPct, 0.1),
+              depth: args.depth,
+              collapse,
+            }),
+          );
         }
         if (args.focus) {
           drill.push(
