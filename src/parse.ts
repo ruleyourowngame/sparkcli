@@ -137,7 +137,7 @@ export interface Report {
 
 let cachedRoot: protobuf.Root | null = null;
 
-async function loadProto(): Promise<protobuf.Root> {
+export async function loadProto(): Promise<protobuf.Root> {
   if (cachedRoot) return cachedRoot;
   const root = new protobuf.Root();
   root.resolvePath = (_origin, target) => {

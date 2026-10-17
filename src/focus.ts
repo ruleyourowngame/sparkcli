@@ -177,3 +177,102 @@ export function renderFocus(
 
   return out.join("\n");
 }
+
+/**
+ * Inverted ("bottom-up") caller tree for every frame matching `needle`: level 0 is the frame
+ * itself, each level below it the callers one step further up, merged by frame identity and
+ * weighted by the matched frame's inclusive time. Answers "who is responsible for X" when the
+ * hot frame is a leaf reached from many places (an allocation site, a codec, a lock).
+ *
+ * `collapse` drops caller frames whose `class.method` matches the regex, so deep recursive
+ * library plumbing (DataFixerUpper codecs, netty pipeline hops) folds away and the first
+ * caller that actually decided to do the work becomes visible. Consecutive repeats of the
+ * same frame (recursion) are folded too.
+ */
+export function renderCallers(
+  thread: Thread,
+  needle: string,
+  opts: { color: boolean; minPct: number; depth: number; collapse?: RegExp },
+): string {
+  const c = opts.color;
+  const total = thread.total || 1;
+  const q = needle.toLowerCase();
+  const fullName = (ref: number): string => {
+    const n = thread.nodes[ref]!;
+    return `${n.className}.${n.methodName}`;
+  };
+
+  // Topmost matches only: a frame nested under itself must not count twice.
+  const hits: number[] = [];
+  const stack = [...thread.childrenRefs];
+  const seen = new Set<number>(stack);
+  while (stack.length > 0) {
+    const ref = stack.pop()!;
+    const n = thread.nodes[ref];
+    if (!n) continue;
+    if (fullName(ref).toLowerCase().includes(q)) {
+      hits.push(ref);
+      continue;
+    }
+    for (const cref of n.childrenRefs) {
+      if (!seen.has(cref)) {
+        seen.add(cref);
+        stack.push(cref);
+      }
+    }
+  }
+
+  type Node = { label: string; time: number; children: Map<string, Node> };
+  const root: Node = { label: "", time: 0, children: new Map() };
+  const parents = buildParents(thread);
+  for (const ref of hits) {
+    const t = sumTimes(thread.nodes[ref]!.times);
+    const path: number[] = [ref];
+    for (let p = parents[ref]!; p !== -1; p = parents[p]!) {
+      if (opts.collapse?.test(fullName(p))) continue;
+      // full names for identity: shortened ones collide across packages
+      if (fullName(p) === fullName(path[path.length - 1]!)) continue;
+      path.push(p);
+      if (path.length > opts.depth) break;
+    }
+    let cur = root;
+    for (const r of path) {
+      const key = fullName(r);
+      let next = cur.children.get(key);
+      if (!next) {
+        next = { label: frameName(thread, r), time: 0, children: new Map() };
+        cur.children.set(key, next);
+      }
+      next.time += t;
+      cur = next;
+    }
+    root.time += t;
+  }
+
+  const out: string[] = [];
+  out.push(
+    paint(`─── callers of "${needle}" — "${thread.name}" ───`, C.cyan, c) +
+      `  ${paint(formatPct((root.time / total) * 100), root.time / total >= 0.05 ? C.red : C.bold, c)} of thread across ${hits.length} call site${hits.length === 1 ? "" : "s"}`,
+  );
+  out.push(
+    paint(
+      `bottom-up: each level is the caller of the one above it (min ${opts.minPct}%, depth ${opts.depth}` +
+        (opts.collapse ? `, collapsing /${opts.collapse.source}/` : "") +
+        ")",
+      C.dim,
+      c,
+    ),
+  );
+  const walk = (n: Node, depth: number) => {
+    const kids = [...n.children.values()].sort((a, b) => b.time - a.time);
+    for (const k of kids) {
+      const pct = (k.time / total) * 100;
+      if (pct < opts.minPct) continue;
+      const col = pct >= 20 ? C.red : pct >= 5 ? C.yellow : pct >= 1 ? "" : C.dim;
+      out.push(`${paint(formatPct(pct).padStart(7), col, c)}  ${"  ".repeat(depth)}${k.label}`);
+      walk(k, depth + 1);
+    }
+  };
+  walk(root, 0);
+  return out.join("\n");
+}
