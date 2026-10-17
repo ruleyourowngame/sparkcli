@@ -128,7 +128,7 @@ sparkcli <spark-url | code | file> [flags]
 | `--focus SUBSTR` | drill into frames matching SUBSTR: caller chains to them + the merged tree below them |
 | `--callers SUBSTR` | inverted (bottom-up) caller tree of every frame matching SUBSTR, merged by caller — "who is responsible for this leaf" (an allocation site, a codec, a lock) |
 | `--collapse REGEX` | with `--callers`: skip caller frames whose `class.method` matches, so recursive plumbing (DFU codecs, netty pipeline hops) folds away |
-| `--merge` | with `--thread NAME`: merge every thread whose name contains NAME into one tree, so a whole pool (`--thread "Netty Epoll" --merge`) reads as one unit for hot spots / `--focus` / `--tree` / `--callers` |
+| `--merge` | with `--thread NAME`: merge every thread whose name contains NAME into one tree, so a whole pool (`--thread "Netty Epoll" --merge`) reads as one unit for hot spots / `--focus` / `--tree` / `--callers` (not with the region views, which need the per-thread region tags) |
 | `--health` | force health-report mode (auto-detected for `x-spark-health` uploads and for local files that aren't sampler reports) |
 | `--depth N` | max depth for `--tree` / `--focus` subtree (default 8) |
 | `--audit PATH` | map top frames to source files inside a repo |

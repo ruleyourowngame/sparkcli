@@ -304,7 +304,7 @@ export function renderAllThreads(
         ? paint(`  ⚠ ${(nativeFrac * 100).toFixed(0)}% native-rooted — may be blocked syscalls, not CPU`, C.yellow, c)
         : "";
     out.push(
-      `${paint(formatPct(pctAll).padStart(9), col, c)}  ${paint(formatPct(pctThr).padStart(8), C.dim, c)}  ${paint(r.name, C.bold, c)}${warn}`,
+      `${paint(formatPct(pctAll).padStart(9), col, c)}  ${paint((isAlloc ? "" : formatPct(pctThr)).padStart(8), C.dim, c)}  ${paint(r.name, C.bold, c)}${warn}`,
     );
     for (const f of r.topFrames) {
       if (f.self <= 0) continue;
@@ -324,8 +324,16 @@ export function renderAllThreads(
   }
 
   out.push("");
-  out.push(paint(`Top ${opts.top} busy frames across ALL threads (self-time):`, C.bold, c));
-  out.push(paint(`${"self%all".padStart(9)}  frame  ·  hottest thread`, C.dim, c));
+  out.push(
+    paint(
+      isAlloc
+        ? `Top ${opts.top} allocating frames across ALL threads (self bytes):`
+        : `Top ${opts.top} busy frames across ALL threads (self-time):`,
+      C.bold,
+      c,
+    ),
+  );
+  out.push(paint(`${(isAlloc ? "alloc%all" : "self%all").padStart(9)}  frame  ·  ${isAlloc ? "top thread" : "hottest thread"}`, C.dim, c));
   for (const f of globalBusyFrames(report).slice(0, opts.top)) {
     const pctAll = (f.self / busyAll) * 100;
     const col = pctAll >= 5 ? C.red : pctAll >= 1 ? C.yellow : C.dim;

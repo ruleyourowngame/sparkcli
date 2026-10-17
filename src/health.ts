@@ -110,6 +110,12 @@ function num(v: unknown): number {
   return 0;
 }
 
+// proto3 defaults absent numbers to 0, so `?? fallback` never fires for them
+function positiveOr(v: unknown, fallback: number): number {
+  const n = num(v);
+  return n > 0 ? n : fallback;
+}
+
 function rolling(r: any): Rolling | undefined {
   if (!r) return undefined;
   return {
@@ -220,11 +226,11 @@ export async function parseHealth(origin: string, bytes: Uint8Array): Promise<He
     players: num(ps.playerCount),
     onlineMode: ps.onlineMode && ps.onlineMode !== "UNKNOWN" ? String(ps.onlineMode).toLowerCase() : "",
     tps: ps.tps
-      ? { last1m: ps.tps.last1m, last5m: ps.tps.last5m, last15m: ps.tps.last15m, target: ps.tps.gameTargetTps ?? 20 }
+      ? { last1m: ps.tps.last1m, last5m: ps.tps.last5m, last15m: ps.tps.last15m, target: positiveOr(ps.tps.gameTargetTps, 20) }
       : undefined,
     mspt:
       ps.mspt?.last1m
-        ? { last1m: rolling(ps.mspt.last1m)!, last5m: rolling(ps.mspt.last5m)!, idealMax: ps.mspt.gameMaxIdealMspt ?? 50 }
+        ? { last1m: rolling(ps.mspt.last1m)!, last5m: rolling(ps.mspt.last5m)!, idealMax: positiveOr(ps.mspt.gameMaxIdealMspt, 50) }
         : undefined,
     ping: rolling(ps.ping?.last15m),
     heap: mem(ps.memory?.heap),

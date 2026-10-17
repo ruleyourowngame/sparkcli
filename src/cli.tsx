@@ -726,6 +726,12 @@ if (args.flagsRepo && !args.input) {
       // --merge: fold every thread matching --thread into one synthetic thread, so pool-wide
       // hot spots / --focus / --tree read the whole pool instead of its first member.
       if (args.merge) {
+        if (args.regions || args.byThread || args.region) {
+          // merged threads lose the region context these views group by
+          console.error("--merge can't be combined with --regions / --by-thread / --region");
+          process.exitCode = 2;
+          return;
+        }
         if (!args.thread) {
           console.error("--merge needs --thread NAME (the substring to merge on)");
           process.exitCode = 2;

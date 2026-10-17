@@ -230,17 +230,18 @@ export function renderCallers(
     const path: number[] = [ref];
     for (let p = parents[ref]!; p !== -1; p = parents[p]!) {
       if (opts.collapse?.test(fullName(p))) continue;
-      if (frameName(thread, p) === frameName(thread, path[path.length - 1]!)) continue;
+      // full names for identity: shortened ones collide across packages
+      if (fullName(p) === fullName(path[path.length - 1]!)) continue;
       path.push(p);
       if (path.length > opts.depth) break;
     }
     let cur = root;
     for (const r of path) {
-      const label = frameName(thread, r);
-      let next = cur.children.get(label);
+      const key = fullName(r);
+      let next = cur.children.get(key);
       if (!next) {
-        next = { label, time: 0, children: new Map() };
-        cur.children.set(label, next);
+        next = { label: frameName(thread, r), time: 0, children: new Map() };
+        cur.children.set(key, next);
       }
       next.time += t;
       cur = next;
